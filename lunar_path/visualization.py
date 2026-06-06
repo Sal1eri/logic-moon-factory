@@ -9,6 +9,28 @@ import seaborn as sns
 from lunar_path.environment import Coord, LunarMap, Scenario
 
 
+METHOD_ORDER = [
+    "Random",
+    "DFS",
+    "A* shortest",
+    "BFS",
+    "Greedy",
+    "DQN",
+    "PPO",
+    "A* risk-aware",
+]
+
+
+def ordered_methods(methods):
+    base = {method: idx for idx, method in enumerate(METHOD_ORDER)}
+
+    def key(method):
+        normalized = method.replace("-online", "")
+        return (base.get(normalized, 999), method)
+
+    return sorted(methods, key=key)
+
+
 def base_rgb(lunar: LunarMap) -> np.ndarray:
     n = lunar.size
     rgb = np.zeros((n, n, 3), dtype=float)
@@ -45,7 +67,6 @@ def plot_environment(lunar: LunarMap, scenario: Scenario, out_dir: Path) -> None
         ax.set_title(title, fontsize=12)
         ax.set_xticks([])
         ax.set_yticks([])
-    fig.suptitle(f"Lunar Scenario: {scenario.title}", fontsize=16, weight="bold")
     fig.savefig(out_dir / f"{scenario.name}_environment.png", dpi=180)
     plt.close(fig)
 
@@ -110,7 +131,6 @@ def plot_paths(lunar: LunarMap, scenario: Scenario, paths: Dict[str, Optional[Li
         )
     ax.scatter([lunar.start[1]], [lunar.start[0]], c="#00e676", s=105, marker="o", edgecolor="black", label="Start")
     ax.scatter([lunar.goal[1]], [lunar.goal[0]], c="#ff1744", s=140, marker="*", edgecolor="black", label="Goal")
-    ax.set_title(f"Path Comparison - {scenario.title}", fontsize=14, weight="bold")
     ax.set_xticks([])
     ax.set_yticks([])
     ax.legend(
@@ -126,7 +146,7 @@ def plot_paths(lunar: LunarMap, scenario: Scenario, paths: Dict[str, Optional[Li
 
 def plot_path_panels(lunar: LunarMap, scenario: Scenario, paths: Dict[str, Optional[List[Coord]]], out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    methods = list(paths.keys())
+    methods = ordered_methods(list(paths.keys()))
     colors = {
         "Random": "#9e9e9e",
         "DFS": "#795548",
@@ -161,7 +181,6 @@ def plot_path_panels(lunar: LunarMap, scenario: Scenario, paths: Dict[str, Optio
         ax.set_yticks([])
     for ax in axes_flat[len(methods):]:
         ax.axis("off")
-    fig.suptitle(f"Individual Method Paths - {scenario.title}", fontsize=16, weight="bold")
     fig.savefig(out_dir / f"{scenario.name}_path_panels.png", dpi=190, bbox_inches="tight")
     plt.close(fig)
 
@@ -185,14 +204,12 @@ def plot_training(logs: pd.DataFrame, out_dir: Path) -> None:
     )
     g.set_titles("{col_name}")
     g.set_axis_labels("Episode", "Smoothed reward")
-    g.fig.suptitle("Deep RL Training Reward Curves", y=1.03, fontsize=15, weight="bold")
     g.savefig(out_dir / "rl_training_reward.png", dpi=180, bbox_inches="tight")
     plt.close(g.fig)
 
     episode_counts = logs.groupby(["scenario", "algorithm"]).size().reset_index(name="completed_episodes")
     fig, ax = plt.subplots(figsize=(10, 5))
     sns.barplot(data=episode_counts, x="scenario", y="completed_episodes", hue="algorithm", ax=ax, palette="Set2")
-    ax.set_title("Completed Training Episodes", fontsize=14, weight="bold")
     ax.set_xlabel("Scenario")
     ax.set_ylabel("Episodes")
     ax.tick_params(axis="x", rotation=25)
@@ -203,18 +220,44 @@ def plot_training(logs: pd.DataFrame, out_dir: Path) -> None:
 def plot_metric_comparison(metrics: pd.DataFrame, out_dir: Path) -> None:
     success = metrics[metrics["path_found"] == 1].copy()
     metric_names = ["path_length", "total_cost", "energy", "terrain_risk", "shadow_ratio", "comm_blackout_ratio"]
-    fig, axes = plt.subplots(2, 3, figsize=(17, 9), constrained_layout=True)
-    for ax, metric in zip(axes.flat, metric_names):
-        sns.barplot(data=success, x="scenario", y=metric, hue="method", ax=ax, palette="Set2")
-        ax.set_title(metric.replace("_", " ").title())
+    compact = success[["scenario", "method"] + metric_names].copy()
+    for scenario, group in compact.groupby("scenario"):
+        for metric in metric_names:
+            values = group[metric]
+            min_v = values.min()
+            max_v = values.max()
+            compact.loc[group.index, metric] = (values - min_v) / (max_v - min_v + 1e-9)
+
+    scenarios = list(compact["scenario"].drop_duplicates())
+    cols = 3
+    rows = int(np.ceil(len(scenarios) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(14.5, 3.6 * rows), constrained_layout=True)
+    axes_flat = list(np.atleast_1d(axes).flat)
+    for ax, scenario in zip(axes_flat, scenarios):
+        data = compact[compact["scenario"] == scenario].set_index("method")[metric_names]
+        data = data.reindex([m for m in ordered_methods(data.index) if m in data.index])
+        labels = data.copy()
+        labels.columns = [c.replace("_", "\n") for c in labels.columns]
+        sns.heatmap(
+            labels,
+            annot=True,
+            fmt=".2f",
+            cmap="magma_r",
+            vmin=0,
+            vmax=1,
+            linewidths=0.45,
+            linecolor="white",
+            cbar=False,
+            ax=ax,
+        )
+        ax.set_title(scenario, fontsize=10, weight="bold")
         ax.set_xlabel("")
-        ax.tick_params(axis="x", rotation=25)
-        if ax.get_legend() is not None:
-            ax.legend_.remove()
-    handles, labels = axes.flat[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=8, bbox_to_anchor=(0.5, 1.05))
-    fig.suptitle("Path Planning Metrics Across Lunar Scenarios", fontsize=16, weight="bold")
-    fig.savefig(out_dir / "metrics_comparison.png", dpi=180, bbox_inches="tight")
+        ax.set_ylabel("")
+        ax.tick_params(axis="x", rotation=0, labelsize=8)
+        ax.tick_params(axis="y", labelsize=8)
+    for ax in axes_flat[len(scenarios):]:
+        ax.axis("off")
+    fig.savefig(out_dir / "metrics_comparison.png", dpi=190, bbox_inches="tight")
     plt.close(fig)
 
     pivot = metrics.pivot_table(index=["scenario", "method"], values=metric_names, aggfunc="mean")
@@ -224,13 +267,11 @@ def plot_metric_comparison(metrics: pd.DataFrame, out_dir: Path) -> None:
         norm[col] = (values - values.min()) / (values.max() - values.min() + 1e-9)
     fig, ax = plt.subplots(figsize=(9, 10))
     sns.heatmap(norm, annot=True, fmt=".2f", cmap="magma_r", ax=ax, cbar_kws={"label": "normalized lower-is-better"})
-    ax.set_title("Normalized Metric Heatmap", fontsize=14, weight="bold")
     fig.savefig(out_dir / "metrics_heatmap.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(12, 5))
     sns.barplot(data=metrics, x="scenario", y="task_success", hue="method", ax=ax, palette="Set2")
-    ax.set_title("Task Success Under Battery Constraint", fontsize=14, weight="bold")
     ax.set_xlabel("Scenario")
     ax.set_ylabel("Task success = path found and energy feasible")
     ax.tick_params(axis="x", rotation=25)
@@ -242,7 +283,6 @@ def plot_metric_comparison(metrics: pd.DataFrame, out_dir: Path) -> None:
     feasible_paths = metrics[metrics["path_found"] == 1].copy()
     sns.barplot(data=feasible_paths, x="scenario", y="energy_margin", hue="method", ax=ax, palette="Set2")
     ax.axhline(0, color="black", lw=1.2, linestyle="--")
-    ax.set_title("Battery Energy Margin", fontsize=14, weight="bold")
     ax.set_xlabel("Scenario")
     ax.set_ylabel("Battery capacity - path energy")
     ax.tick_params(axis="x", rotation=25)
@@ -250,6 +290,7 @@ def plot_metric_comparison(metrics: pd.DataFrame, out_dir: Path) -> None:
     plt.close(fig)
 
     outcome = metrics.pivot(index="method", columns="scenario", values="task_success")
+    outcome = outcome.reindex([m for m in ordered_methods(outcome.index) if m in outcome.index])
     labels = outcome.map(lambda value: "PASS" if value == 1 else "FAIL")
     fig, ax = plt.subplots(figsize=(11, 4.8))
     sns.heatmap(
@@ -264,7 +305,6 @@ def plot_metric_comparison(metrics: pd.DataFrame, out_dir: Path) -> None:
         linecolor="white",
         ax=ax,
     )
-    ax.set_title("Task Outcome Matrix", fontsize=14, weight="bold")
     ax.set_xlabel("Scenario")
     ax.set_ylabel("Method")
     ax.tick_params(axis="x", rotation=25)
@@ -276,6 +316,7 @@ def plot_generalization(generalization: pd.DataFrame, out_dir: Path) -> None:
     if generalization.empty:
         return
     outcome = generalization.pivot(index="method", columns="train_scenario", values="task_success")
+    outcome = outcome.reindex([m for m in ordered_methods(outcome.index) if m in outcome.index])
     labels = outcome.map(lambda value: "PASS" if value == 1 else "FAIL")
     fig, ax = plt.subplots(figsize=(10, 3.2))
     sns.heatmap(
@@ -290,7 +331,6 @@ def plot_generalization(generalization: pd.DataFrame, out_dir: Path) -> None:
         linecolor="white",
         ax=ax,
     )
-    ax.set_title("DQN/PPO Unseen-Map Generalization", fontsize=14, weight="bold")
     ax.set_xlabel("Training scenario tested on unseen seed")
     ax.set_ylabel("Saved RL model")
     ax.tick_params(axis="x", rotation=25)

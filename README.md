@@ -80,6 +80,8 @@ An additional generalization experiment evaluates saved DQN/PPO models on unseen
 
 The repository also includes an **online local-view replanning** experiment. In this setting, the rover does not start with the full map. It updates a circular local sensing window while moving and replans with the currently known map. This experiment includes a `D* Lite-style` replanning baseline.
 
+A scale-up experiment is also provided. It generates multiple random maps per scenario family and reports pass rates over a larger sample rather than only a few case-level examples.
+
 ## Repository Layout
 
 ```text
@@ -90,6 +92,7 @@ The repository also includes an **online local-view replanning** experiment. In 
 │   ├── metrics.py              # Path and battery metrics
 │   ├── online.py               # Local-view online replanning experiment
 │   ├── report.py               # Markdown report generator
+│   ├── scale_up.py             # Multi-seed scale-up robustness experiment
 │   ├── scenarios.py            # Scenario definitions
 │   ├── visualization.py        # Figures and plots
 │   └── methods/
@@ -161,6 +164,22 @@ run_online_experiment(
 PY
 ```
 
+To run the scale-up robustness experiment:
+
+```bash
+.venv/bin/python - <<'PY'
+from pathlib import Path
+from lunar_path.scale_up import run_scale_up_experiment
+
+run_scale_up_experiment(
+    Path("experiments/results"),
+    Path("experiments/results/models"),
+    seeds_per_scenario=8,
+    sensing_radius=5,
+)
+PY
+```
+
 ## Outputs
 
 Important generated files:
@@ -169,8 +188,11 @@ Important generated files:
 - `experiments/results/metrics.csv`: main metrics
 - `experiments/results/generalization_metrics.csv`: unseen-map RL generalization metrics
 - `experiments/results/online_metrics.csv`: online local-view replanning metrics
+- `experiments/results/scale_up_metrics.csv`: per-map scale-up experiment metrics
+- `experiments/results/scale_up_summary.csv`: aggregated scale-up pass rates
 - `experiments/results/figures/task_outcome_matrix.png`: pass/fail outcome matrix
 - `experiments/results/figures/online_task_outcome_matrix.png`: online pass/fail outcome matrix
+- `experiments/results/figures/scale_up_overall_pass_rate.png`: scale-up pass-rate comparison
 - `experiments/results/figures/metrics_comparison.png`: metric comparison chart
 - `experiments/results/figures/*_paths.png`: combined path visualizations
 - `experiments/results/figures/*_path_panels.png`: per-method path visualizations

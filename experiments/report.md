@@ -1,83 +1,36 @@
-# Lunar Industrial Path Planning Experiment Report
+# Energy-Aware Path Planning for Lunar Industrial Rovers under Terrain Risk and Local Sensing Constraints
 
-## 1. Objective
+## Abstract
 
-This project studies path planning for an autonomous transport rover in a lunar industrial base. The simulated terrain is designed to resemble a simplified lunar surface, including crater fields, rock obstacles, elevation variation, steep ridges, soft regolith, permanent shadow regions, illumination differences, and communication blind zones.
+This report studies energy-constrained path planning for a lunar industrial rover operating on moon-like terrain. The simulated environment contains DEM-like elevation, crater and rock obstacles, slope risk, soft regolith, illumination variation, communication coverage, and scenario-specific battery capacity. The study first evaluates offline full-map planning, where the complete terrain map is known before planning. It then adds two extensions: reinforcement-learning transfer to unseen random maps and online local-view replanning with incremental map updates. Results show that distance-only planning is insufficient under lunar terrain constraints. A risk-aware A* planner, which explicitly optimizes energy and terrain risk, is the most reliable method in both case-level and scale-up experiments.
 
-The experiment compares eight methods:
+**Keywords:** lunar rover, path planning, energy constraint, risk-aware A*, D* Lite-style replanning, reinforcement learning, local sensing
 
-- **Random**: a stochastic baseline that samples feasible moves.
-- **DFS**: depth-first search, a blind graph-search baseline that can produce long and energy-inefficient routes.
-- **BFS**: breadth-first search, an unweighted graph-search baseline that minimizes the number of grid steps but ignores terrain energy.
-- **Greedy**: a local best-first baseline using distance-to-goal and terrain cost.
-- **A\* shortest**: a geometric shortest-path baseline using distance and impassable obstacles.
-- **A\* risk-aware**: a cost-aware A\* planner using slope, crater risk, regolith, illumination, and communication quality.
-- **DQN**: a deep Q-network reinforcement learning agent trained with Stable-Baselines3.
-- **PPO**: a policy-gradient reinforcement learning agent trained with Stable-Baselines3.
+## 1. Introduction
 
-DQN and PPO are evaluated with a lightweight safety executor: invalid moves, repeated cells, and immediately battery-depleting moves are rejected during rollout. This does not provide a global path solution to the RL agents; it only enforces rover safety constraints during execution.
+Future lunar industrial activity will require mobile robots to transport equipment, resources, and samples across unstructured terrain. Unlike terrestrial road navigation, lunar surface mobility is affected by craters, rocks, steep slopes, soft regolith, poor illumination, communication gaps, and strict battery limits. A shortest geometric path may therefore fail even when it is collision-free.
 
-## 2. Inputs and Outputs
+The goal of this project is to compare classical search, heuristic planning, risk-aware planning, and reinforcement learning under these lunar constraints. The central question is whether a planner that explicitly models terrain-dependent energy and mission risk can outperform simpler path-planning baselines.
 
-### Inputs
+## 2. Problem Formulation
 
-- Map size: `45 x 45` grid cells.
-- Start: lunar base core area.
-- Goal: resource extraction site or industrial target facility.
-- Terrain layers: elevation, slope, obstacles, crater risk, soft regolith, illumination, and communication coverage.
-- Action space: 8 movement directions, including cardinal and diagonal moves.
-- RL reward: terminal reward for reaching the goal, terrain-dependent transition cost, invalid-move penalty, and potential-based distance shaping.
-- Fairness control: all methods use the same map, start, goal, action directions, obstacle constraints, and evaluation metrics. The RL base reward uses the same transition cost optimized by risk-aware A\*; distance shaping is potential-based and is used only to accelerate training.
-- Battery constraint: a route is counted as a full task success only if a path is found and its estimated energy consumption does not exceed the scenario battery capacity.
+The rover moves on a `45 x 45` grid map. A task starts at a lunar base location and ends at a target industrial site. A route is successful only if the rover reaches the goal and its accumulated energy consumption does not exceed the scenario battery capacity.
 
-### Outputs
+The main experiment assumes a **fully known offline lunar terrain map**. Before planning starts, the rover has access to all terrain layers. This is not a SLAM experiment. Online perception and partial map knowledge are studied separately in Section 8.
 
-- Lunar environment visualization for each scenario.
-- Path comparison visualization for each scenario.
-- Deep RL training reward curves.
-- Completed training episode chart.
-- Cross-method metric comparison chart.
-- Normalized metric heatmap.
-- Battery feasibility and energy margin charts.
-- Saved DQN/PPO model weights for each scenario.
-- Raw metric CSV file.
+Each cell stores the following map layers:
 
-## 3. Lunar Simulation Environment
-
-### 3.1 Mapping Assumption
-
-This experiment assumes a **fully known offline lunar terrain map**. Before planning starts, the rover is assumed to have access to the complete simulated DEM-derived environment, including elevation, slope, obstacle locations, crater risk, regolith, illumination, communication coverage, and battery capacity.
-
-This means the current work is an offline path-planning study, not an online SLAM or exploration problem. Online perception, localization uncertainty, incremental mapping, dynamic obstacle discovery, and real-time map updates are outside the scope of this experiment.
-
-The planning problem can therefore be stated as:
-
-> Given a known lunar terrain map with DEM-derived slope, terrain risk, illumination, communication coverage, and battery constraints, plan an energy-feasible and risk-aware path for a lunar industrial rover.
-
-### 3.2 Terrain Layers
-
-| Variable | Meaning | Planning effect |
+| Layer | Meaning | Role in planning |
 |---|---|---|
-| elevation | Terrain height | Creates lunar ridges and depressions |
-| slope | Local slope | Higher slope increases energy use and risk; extreme slope is impassable |
-| obstacle | Rock or crater core | Impassable cell |
-| crater_risk | Crater rim risk | Adds terrain hazard cost |
-| regolith | Soft regolith level | Adds energy cost and traction risk |
-| illumination | Sunlight intensity | Low illumination increases energy and thermal risk |
-| communication | Communication quality | Poor coverage increases mission risk |
+| elevation | DEM-like terrain height | Used for uphill energy cost |
+| slope | local slope | Increases energy and terrain risk |
+| obstacle | rock or crater core | Impassable cell |
+| crater_risk | crater rim hazard | Adds risk cost |
+| regolith | soft soil level | Increases traction energy cost |
+| illumination | sunlight level | Low illumination increases energy cost |
+| communication | communication quality | Poor coverage increases mission risk |
 
-The map also stores a cell-level terrain score for visualization and local greedy scoring:
-
-```text
-Cost = 1
-     + 2.8 * slope
-     + 2.2 * crater_risk
-     + 1.7 * regolith
-     + 1.6 * (1 - illumination)
-     + 1.3 * (1 - communication)
-```
-
-Energy is explicitly modeled at the transition level. Moving across different terrain consumes different energy. For a movement from cell `s` to next cell `s'`, the energy model is:
+The transition-level energy model is:
 
 ```text
 transition_energy = move_distance
@@ -88,204 +41,88 @@ transition_energy = move_distance
                      + 0.8 * (1 - illumination(s')))
 ```
 
-The total mission transition cost used by risk-aware A\* and the RL base reward is:
+The total risk-aware transition cost is:
 
 ```text
 transition_cost = transition_energy
                 + 2.2 * crater_risk(s')
                 + 1.0 * slope(s')
                 + 1.3 * (1 - communication(s'))
-RL_base_reward = -transition_cost
 ```
 
-During execution, energy is accumulated after every movement. If cumulative energy exceeds `battery_capacity`, the route immediately fails and the executed trajectory stops at the depletion point. This applies to Random, Greedy, A\*, DQN, and PPO rollouts.
+Battery use is accumulated during execution. If cumulative energy exceeds `battery_capacity`, the route immediately fails.
 
-## 4. Experimental Scenarios
+## 3. Methods
 
-### baseline: Base Plain With Sparse Rocks
+Eight methods are compared in the offline full-map experiment:
 
-- Crater count: 4
-- Rock density: 0.018
-- Soft regolith patches: 2
-- Shadow patches: 1
-- Communication stations: 2
-- Elevation variation scale: 1.0
-- RL training timesteps per deep RL method: 50000
-- Battery capacity: 90.0
+| Method | Description | Main limitation |
+|---|---|---|
+| Random | Random feasible movement baseline | No global objective |
+| DFS | Depth-first graph search | Can produce long inefficient paths |
+| BFS | Breadth-first graph search | Optimizes step count, not energy |
+| Greedy | Local best-first movement | Can be locally trapped or energy-myopic |
+| A* shortest | A* with geometric path cost | Ignores terrain energy and risk |
+| A* risk-aware | A* with energy-risk transition cost and battery pruning | Requires known cost map |
+| DQN | Deep Q-network trained per scenario | Limited map awareness in low-dimensional observation |
+| PPO | Policy-gradient RL trained per scenario | Same limitation as DQN |
 
-![Base Plain With Sparse Rocks environment](results/figures/baseline_environment.png)
+DQN and PPO use a lightweight safety executor during rollout. Invalid actions, repeated cells, and immediately battery-depleting actions are rejected. This enforces rover safety constraints but does not give the RL agent a global planner.
 
-![Base Plain With Sparse Rocks paths](results/figures/baseline_paths.png)
+## 4. Experimental Setup
 
-![Base Plain With Sparse Rocks individual method paths](results/figures/baseline_path_panels.png)
+Six lunar scenario families are generated. Battery capacities are selected from pilot runs to avoid trivial all-pass or all-fail outcomes.
 
-### crater_field: Dense Crater Field
+| scenario             | terrain                             | craters | rock_density | shadow_patches | comm_stations | battery_capacity |
+| -------------------- | ----------------------------------- | ------- | ------------ | -------------- | ------------- | ---------------- |
+| baseline             | Base Plain With Sparse Rocks        | 4       | 0.018        | 1              | 2             | 90.0             |
+| crater_field         | Dense Crater Field                  | 10      | 0.018        | 1              | 2             | 90.0             |
+| slope_ridges         | Highland Ridges And Slopes          | 6       | 0.014        | 1              | 1             | 92.0             |
+| shadow_comm          | Polar Shadow And Communication Gaps | 6       | 0.014        | 5              | 1             | 118.0            |
+| complex_moon         | Integrated Lunar Industrial Terrain | 9       | 0.022        | 4              | 2             | 108.0            |
+| low_battery_bad_case | Low Battery Bad Case                | 7       | 0.016        | 4              | 1             | 112.0            |
 
-- Crater count: 10
-- Rock density: 0.018
-- Soft regolith patches: 2
-- Shadow patches: 1
-- Communication stations: 2
-- Elevation variation scale: 1.0
-- RL training timesteps per deep RL method: 60000
-- Battery capacity: 90.0
+The report evaluates four experimental settings:
 
-![Dense Crater Field environment](results/figures/crater_field_environment.png)
+1. **Offline full-map case study:** all eight methods are tested on the six representative scenario maps.
+2. **RL unseen-map test:** saved DQN/PPO models are tested on same-family maps generated with new random seeds.
+3. **Online local-view replanning:** the rover incrementally reveals a local sensing window and replans as the map is updated.
+4. **Scale-up test:** multiple random maps per scenario family are generated to estimate pass rates statistically.
 
-![Dense Crater Field paths](results/figures/crater_field_paths.png)
+## 5. Offline Full-Map Results
 
-![Dense Crater Field individual method paths](results/figures/crater_field_path_panels.png)
-
-### slope_ridges: Highland Ridges And Slopes
-
-- Crater count: 6
-- Rock density: 0.014
-- Soft regolith patches: 2
-- Shadow patches: 1
-- Communication stations: 1
-- Elevation variation scale: 2.2
-- RL training timesteps per deep RL method: 60000
-- Battery capacity: 92.0
-
-![Highland Ridges And Slopes environment](results/figures/slope_ridges_environment.png)
-
-![Highland Ridges And Slopes paths](results/figures/slope_ridges_paths.png)
-
-![Highland Ridges And Slopes individual method paths](results/figures/slope_ridges_path_panels.png)
-
-### shadow_comm: Polar Shadow And Communication Gaps
-
-- Crater count: 6
-- Rock density: 0.014
-- Soft regolith patches: 3
-- Shadow patches: 5
-- Communication stations: 1
-- Elevation variation scale: 1.35
-- RL training timesteps per deep RL method: 70000
-- Battery capacity: 118.0
-
-![Polar Shadow And Communication Gaps environment](results/figures/shadow_comm_environment.png)
-
-![Polar Shadow And Communication Gaps paths](results/figures/shadow_comm_paths.png)
-
-![Polar Shadow And Communication Gaps individual method paths](results/figures/shadow_comm_path_panels.png)
-
-### complex_moon: Integrated Lunar Industrial Terrain
-
-- Crater count: 9
-- Rock density: 0.022
-- Soft regolith patches: 5
-- Shadow patches: 4
-- Communication stations: 2
-- Elevation variation scale: 1.8
-- RL training timesteps per deep RL method: 80000
-- Battery capacity: 108.0
-
-![Integrated Lunar Industrial Terrain environment](results/figures/complex_moon_environment.png)
-
-![Integrated Lunar Industrial Terrain paths](results/figures/complex_moon_paths.png)
-
-![Integrated Lunar Industrial Terrain individual method paths](results/figures/complex_moon_path_panels.png)
-
-### low_battery_bad_case: Low Battery Bad Case
-
-- Crater count: 7
-- Rock density: 0.016
-- Soft regolith patches: 5
-- Shadow patches: 4
-- Communication stations: 1
-- Elevation variation scale: 1.85
-- RL training timesteps per deep RL method: 70000
-- Battery capacity: 112.0
-
-![Low Battery Bad Case environment](results/figures/low_battery_bad_case_environment.png)
-
-![Low Battery Bad Case paths](results/figures/low_battery_bad_case_paths.png)
-
-![Low Battery Bad Case individual method paths](results/figures/low_battery_bad_case_path_panels.png)
-
-## 5. Visual Results
-
-### 5.1 Metric Comparison
-
-![Metrics comparison](results/figures/metrics_comparison.png)
-
-### 5.2 Normalized Metric Heatmap
-
-Lower normalized values indicate better performance for the corresponding metric.
-
-![Metrics heatmap](results/figures/metrics_heatmap.png)
-
-### 5.3 Battery Constraint Results
-
-![Battery task success](results/figures/battery_task_success.png)
-
-![Battery energy margin](results/figures/battery_energy_margin.png)
+**Figure 1. Pass/fail outcome matrix for the offline full-map experiment.**
 
 ![Task outcome matrix](results/figures/task_outcome_matrix.png)
 
-### 5.4 Deep RL Training Curves
+**Figure 2. Compact cross-method metric matrix. Values are normalized within each scenario; lower is better.**
 
-![RL training reward](results/figures/rl_training_reward.png)
+![Metrics comparison](results/figures/metrics_comparison.png)
 
-![RL training episodes](results/figures/rl_training_episodes.png)
+**Figure 3. Normalized metric heatmap. Lower values are better.**
 
-## 6. Result Summary
+![Metrics heatmap](results/figures/metrics_heatmap.png)
 
-### 6.1 Raw Metric Table
+**Figure 4. Battery energy margin by method and scenario.**
 
-| scenario             | scenario_title                      | method        | path_found | energy_feasible | task_success | battery_capacity | energy_margin | path_length | total_cost | energy   | terrain_risk | shadow_ratio | comm_blackout_ratio | avg_slope |
-| -------------------- | ----------------------------------- | ------------- | ---------- | --------------- | ------------ | ---------------- | ------------- | ----------- | ---------- | -------- | ------------ | ------------ | ------------------- | --------- |
-| baseline             | Base Plain With Sparse Rocks        | Random        | 0          | 0               | 0            | 90.0             | -2.2711       | 70.7401     | 125.9971   | 92.2711  | 7.3149       | 0.0          | 0.1071              | 0.1306    |
-| baseline             | Base Plain With Sparse Rocks        | DFS           | 1          | 1               | 1            | 90.0             | 6.9842        | 50.4975     | 145.2054   | 83.0158  | 17.511       | 0.0          | 0.5946              | 0.2206    |
-| baseline             | Base Plain With Sparse Rocks        | BFS           | 1          | 1               | 1            | 90.0             | 5.1806        | 50.4975     | 149.028    | 84.8194  | 19.1812      | 0.0          | 0.5676              | 0.2427    |
-| baseline             | Base Plain With Sparse Rocks        | Greedy        | 1          | 1               | 1            | 90.0             | 3.6603        | 54.598      | 135.8947   | 86.3397  | 8.8093       | 0.1364       | 0.6591              | 0.2002    |
-| baseline             | Base Plain With Sparse Rocks        | A* shortest   | 1          | 1               | 1            | 90.0             | 6.9033        | 50.4975     | 145.3179   | 83.0967  | 17.5426      | 0.0          | 0.5946              | 0.2214    |
-| baseline             | Base Plain With Sparse Rocks        | A* risk-aware | 1          | 1               | 1            | 90.0             | 11.4447       | 54.0122     | 122.078    | 78.5553  | 5.3423       | 0.1395       | 0.5814              | 0.1242    |
-| baseline             | Base Plain With Sparse Rocks        | DQN           | 1          | 1               | 1            | 90.0             | 3.6603        | 54.598      | 135.8947   | 86.3397  | 8.8093       | 0.1364       | 0.6591              | 0.2002    |
-| baseline             | Base Plain With Sparse Rocks        | PPO           | 1          | 1               | 1            | 90.0             | 3.6603        | 54.598      | 135.8947   | 86.3397  | 8.8093       | 0.1364       | 0.6591              | 0.2002    |
-| crater_field         | Dense Crater Field                  | Random        | 0          | 0               | 0            | 90.0             | -0.2217       | 57.2843     | 212.5973   | 90.2217  | 33.3243      | 0.0          | 1.0                 | 0.2415    |
-| crater_field         | Dense Crater Field                  | DFS           | 1          | 0               | 0            | 90.0             | -0.6078       | 51.669      | 171.9087   | 90.6078  | 19.8096      | 0.0769       | 1.0                 | 0.2464    |
-| crater_field         | Dense Crater Field                  | BFS           | 1          | 1               | 1            | 90.0             | 1.8448        | 51.669      | 172.772    | 88.1552  | 21.0856      | 0.1282       | 1.0                 | 0.2355    |
-| crater_field         | Dense Crater Field                  | Greedy        | 1          | 1               | 1            | 90.0             | 0.1916        | 54.0122     | 174.7711   | 89.8084  | 19.2915      | 0.0698       | 1.0                 | 0.2312    |
-| crater_field         | Dense Crater Field                  | A* shortest   | 1          | 0               | 0            | 90.0             | -1.5696       | 51.669      | 173.1027   | 91.5696  | 20.0419      | 0.1026       | 1.0                 | 0.2524    |
-| crater_field         | Dense Crater Field                  | A* risk-aware | 1          | 1               | 1            | 90.0             | 7.7549        | 52.2548     | 162.2758   | 82.2451  | 17.2395      | 0.075        | 1.0                 | 0.176     |
-| crater_field         | Dense Crater Field                  | DQN           | 1          | 1               | 1            | 90.0             | 1.0062        | 54.0122     | 175.5805   | 88.9938  | 19.8954      | 0.0698       | 1.0                 | 0.2255    |
-| crater_field         | Dense Crater Field                  | PPO           | 1          | 1               | 1            | 90.0             | 1.0062        | 54.0122     | 175.5805   | 88.9938  | 19.8954      | 0.0698       | 1.0                 | 0.2255    |
-| slope_ridges         | Highland Ridges And Slopes          | Random        | 0          | 0               | 0            | 92.0             | -0.0774       | 61.6985     | 171.0319   | 92.0774  | 10.3792      | 0.0          | 1.0                 | 0.1922    |
-| slope_ridges         | Highland Ridges And Slopes          | DFS           | 0          | 0               | 0            | 92.0             | -2.3697       | 52.0833     | 166.8879   | 94.3697  | 23.1072      | 0.0          | 0.5641              | 0.2874    |
-| slope_ridges         | Highland Ridges And Slopes          | BFS           | 1          | 1               | 1            | 92.0             | 4.1972        | 51.669      | 146.8771   | 87.8028  | 16.4489      | 0.0513       | 0.6154              | 0.2474    |
-| slope_ridges         | Highland Ridges And Slopes          | Greedy        | 1          | 1               | 1            | 92.0             | 3.9786        | 51.669      | 146.4494   | 88.0214  | 16.3189      | 0.0256       | 0.5641              | 0.2441    |
-| slope_ridges         | Highland Ridges And Slopes          | A* shortest   | 1          | 1               | 1            | 92.0             | 1.1529        | 51.669      | 152.2413   | 90.8471  | 18.3421      | 0.0          | 0.5641              | 0.2742    |
-| slope_ridges         | Highland Ridges And Slopes          | A* risk-aware | 1          | 1               | 1            | 92.0             | 6.0943        | 56.8406     | 132.1378   | 85.9057  | 6.2054       | 0.0          | 0.5333              | 0.1379    |
-| slope_ridges         | Highland Ridges And Slopes          | DQN           | 1          | 1               | 1            | 92.0             | 3.6951        | 52.2548     | 149.2179   | 88.3049  | 17.4039      | 0.0          | 0.55                | 0.2438    |
-| slope_ridges         | Highland Ridges And Slopes          | PPO           | 1          | 1               | 1            | 92.0             | 3.6951        | 52.2548     | 149.2179   | 88.3049  | 17.4039      | 0.0          | 0.55                | 0.2438    |
-| shadow_comm          | Polar Shadow And Communication Gaps | Random        | 0          | 0               | 0            | 118.0            | -0.9916       | 61.5269     | 196.5224   | 118.9916 | 12.4257      | 0.0          | 0.9811              | 0.2344    |
-| shadow_comm          | Polar Shadow And Communication Gaps | DFS           | 0          | 0               | 0            | 118.0            | -2.7583       | 46.4264     | 198.5494   | 120.7583 | 21.6666      | 0.1143       | 1.0                 | 0.3276    |
-| shadow_comm          | Polar Shadow And Communication Gaps | BFS           | 1          | 1               | 1            | 118.0            | 2.5416        | 53.4264     | 202.4323   | 115.4584 | 22.7694      | 0.0          | 1.0                 | 0.3195    |
-| shadow_comm          | Polar Shadow And Communication Gaps | Greedy        | 1          | 0               | 0            | 118.0            | -0.6167       | 55.4264     | 207.0917   | 118.6167 | 21.6706      | 0.0455       | 1.0                 | 0.28      |
-| shadow_comm          | Polar Shadow And Communication Gaps | A* shortest   | 0          | 0               | 0            | 118.0            | -1.0258       | 46.598      | 193.9692   | 119.0258 | 19.5589      | 0.1111       | 1.0                 | 0.3072    |
-| shadow_comm          | Polar Shadow And Communication Gaps | A* risk-aware | 1          | 1               | 1            | 118.0            | 25.3983       | 62.9411     | 158.9868   | 92.6017  | 9.3709       | 0.0          | 0.6667              | 0.1735    |
-| shadow_comm          | Polar Shadow And Communication Gaps | DQN           | 1          | 1               | 1            | 118.0            | 0.2416        | 57.4264     | 208.1574   | 117.7584 | 20.9945      | 0.0435       | 1.0                 | 0.2531    |
-| shadow_comm          | Polar Shadow And Communication Gaps | PPO           | 1          | 1               | 1            | 118.0            | 0.2416        | 57.4264     | 208.1574   | 117.7584 | 20.9945      | 0.0435       | 1.0                 | 0.2531    |
-| complex_moon         | Integrated Lunar Industrial Terrain | Random        | 0          | 0               | 0            | 108.0            | -2.2688       | 63.9411     | 188.7639   | 110.2688 | 8.8625       | 0.0          | 1.0                 | 0.1611    |
-| complex_moon         | Integrated Lunar Industrial Terrain | DFS           | 0          | 0               | 0            | 108.0            | -0.6132       | 52.598      | 201.4367   | 108.6132 | 24.4217      | 0.0          | 1.0                 | 0.2779    |
-| complex_moon         | Integrated Lunar Industrial Terrain | BFS           | 1          | 1               | 1            | 108.0            | 2.9134        | 53.4264     | 198.0332   | 105.0866 | 24.044       | 0.0476       | 1.0                 | 0.2487    |
-| complex_moon         | Integrated Lunar Industrial Terrain | Greedy        | 0          | 0               | 0            | 108.0            | -1.8891       | 53.0122     | 206.0971   | 109.8891 | 25.7662      | 0.0          | 1.0                 | 0.2694    |
-| complex_moon         | Integrated Lunar Industrial Terrain | A* shortest   | 1          | 1               | 1            | 108.0            | 6.752         | 53.4264     | 192.433    | 101.248  | 23.8578      | 0.0476       | 1.0                 | 0.2847    |
-| complex_moon         | Integrated Lunar Industrial Terrain | A* risk-aware | 1          | 1               | 1            | 108.0            | 7.9356        | 74.4558     | 173.5608   | 100.0644 | 8.3341       | 0.0          | 0.6029              | 0.1226    |
-| complex_moon         | Integrated Lunar Industrial Terrain | DQN           | 0          | 1               | 0            | 108.0            | 0.8873        | 54.1838     | 206.5009   | 107.1127 | 26.3464      | 0.0          | 1.0                 | 0.2704    |
-| complex_moon         | Integrated Lunar Industrial Terrain | PPO           | 0          | 1               | 0            | 108.0            | 0.8873        | 54.1838     | 206.5009   | 107.1127 | 26.3464      | 0.0          | 1.0                 | 0.2704    |
-| low_battery_bad_case | Low Battery Bad Case                | Random        | 0          | 0               | 0            | 112.0            | -0.3309       | 73.8406     | 204.7828   | 112.3309 | 13.4574      | 0.0          | 1.0                 | 0.2171    |
-| low_battery_bad_case | Low Battery Bad Case                | DFS           | 0          | 0               | 0            | 112.0            | -1.7844       | 48.0833     | 198.7867   | 113.7844 | 25.8079      | 0.0          | 1.0                 | 0.3731    |
-| low_battery_bad_case | Low Battery Bad Case                | BFS           | 0          | 0               | 0            | 112.0            | -0.9581       | 47.669      | 199.8645   | 112.9581 | 26.6919      | 0.0          | 1.0                 | 0.3741    |
-| low_battery_bad_case | Low Battery Bad Case                | Greedy        | 1          | 1               | 1            | 112.0            | 1.205         | 55.4264     | 175.5919   | 110.795  | 11.8579      | 0.0          | 1.0                 | 0.2695    |
-| low_battery_bad_case | Low Battery Bad Case                | A* shortest   | 0          | 0               | 0            | 112.0            | -1.7844       | 48.0833     | 198.7867   | 113.7844 | 25.8079      | 0.0          | 1.0                 | 0.3731    |
-| low_battery_bad_case | Low Battery Bad Case                | A* risk-aware | 1          | 1               | 1            | 112.0            | 33.2969       | 57.7696     | 141.6346   | 78.7031  | 7.0827       | 0.0          | 0.8958              | 0.1476    |
-| low_battery_bad_case | Low Battery Bad Case                | DQN           | 1          | 1               | 1            | 112.0            | 1.205         | 55.4264     | 175.5919   | 110.795  | 11.8579      | 0.0          | 1.0                 | 0.2695    |
-| low_battery_bad_case | Low Battery Bad Case                | PPO           | 1          | 1               | 1            | 112.0            | 1.205         | 55.4264     | 175.5919   | 110.795  | 11.8579      | 0.0          | 1.0                 | 0.2695    |
+![Battery energy margin](results/figures/battery_energy_margin.png)
 
-### 6.2 Lowest Total Cost Method per Scenario
+### 5.1 Offline Summary
+
+| method        | sum | count | pass_rate |
+| ------------- | --- | ----- | --------- |
+| Random        | 0   | 6     | 0.0       |
+| DFS           | 1   | 6     | 0.1667    |
+| A* shortest   | 3   | 6     | 0.5       |
+| Greedy        | 4   | 6     | 0.6667    |
+| BFS           | 5   | 6     | 0.8333    |
+| DQN           | 5   | 6     | 0.8333    |
+| PPO           | 5   | 6     | 0.8333    |
+| A* risk-aware | 6   | 6     | 1.0       |
+
+### 5.2 Lowest-Cost and Lowest-Energy Routes
+
+**Lowest total cost by scenario:**
 
 | scenario             | method        | total_cost | path_length | energy   | terrain_risk |
 | -------------------- | ------------- | ---------- | ----------- | -------- | ------------ |
@@ -296,7 +133,7 @@ Lower normalized values indicate better performance for the corresponding metric
 | shadow_comm          | A* risk-aware | 158.9868   | 62.9411     | 92.6017  | 9.3709       |
 | slope_ridges         | A* risk-aware | 132.1378   | 56.8406     | 85.9057  | 6.2054       |
 
-### 6.3 Lowest Energy Method per Scenario
+**Lowest energy by scenario:**
 
 | scenario             | method        | energy   | total_cost | path_length | terrain_risk |
 | -------------------- | ------------- | -------- | ---------- | ----------- | ------------ |
@@ -307,162 +144,196 @@ Lower normalized values indicate better performance for the corresponding metric
 | shadow_comm          | A* risk-aware | 92.6017  | 158.9868   | 62.9411     | 9.3709       |
 | slope_ridges         | A* risk-aware | 85.9057  | 132.1378   | 56.8406     | 6.2054       |
 
-## 7. Analysis
+### 5.3 Representative Path Visualizations
 
-1. **Random** is included only as a weak lower-bound baseline. It usually fails in dense crater or high-risk maps because it has no global objective.
+The following figures show representative combined and per-method path visualizations. Overlapping paths in combined figures are slightly offset for readability.
 
-2. **Greedy** improves over Random by moving toward the goal, but it is local and can get trapped near crater rims or obstacle pockets.
+**Figure. Combined paths for `baseline`.**
 
-3. **DFS** and **BFS** are useful classical baselines. BFS can find a step-short path, while DFS may find a much longer route depending on search order. Neither method understands energy, illumination, communication, or crater risk during planning.
+![Base Plain With Sparse Rocks paths](results/figures/baseline_paths.png)
 
-4. **A\* shortest** usually finds a short geometric route, but it may cross crater rims, steep slopes, shadow regions, or low-communication zones because it ignores mission risk.
+**Figure. Individual method paths for `baseline`. Failed trajectories are marked with an `X`.**
 
-5. **A\* risk-aware** explicitly models lunar terrain cost. It often selects a longer route, but the route is safer and more realistic for lunar industrial logistics.
+![Base Plain With Sparse Rocks individual method paths](results/figures/baseline_path_panels.png)
 
-6. **DQN** and **PPO** learn policies through environment interaction. They can produce feasible paths when reward shaping is sufficient, but their stability depends on training budget and scenario complexity. In the low-battery bad case, the neural policies avoid immediate battery depletion but still fail to reach the goal, which is an important negative result.
+**Figure. Combined paths for `crater_field`.**
 
-7. The battery capacities are intentionally tuned to create mixed outcomes rather than an all-pass or all-fail benchmark. In easier settings, several classical and RL methods can finish. In harder settings, methods fail for different reasons: blind search wastes energy, shortest-path search ignores terrain cost, greedy planning can be locally efficient but not globally safe, and RL policies may conserve energy without reaching the goal. A\* risk-aware is the only method designed to explicitly optimize the same energy-risk cost used by the evaluation, which explains its stronger pass rate.
+![Dense Crater Field paths](results/figures/crater_field_paths.png)
 
-8. Lunar path planning is not a normal shortest-path problem. After slope, illumination, communication, regolith, and battery capacity are introduced, the shortest path and the best mission path often differ.
+**Figure. Individual method paths for `crater_field`. Failed trajectories are marked with an `X`.**
 
-## 8. Conclusion
+![Dense Crater Field individual method paths](results/figures/crater_field_path_panels.png)
 
-The experiment demonstrates that moon-like terrain constraints change the path-planning objective. Distance-only planning is not enough for lunar industrial transportation. A risk-aware planner is a strong baseline for known static maps, while deep reinforcement learning becomes more relevant when future tasks include unknown terrain, dynamic hazards, multi-rover coordination, or long-horizon task scheduling.
+**Figure. Combined paths for `slope_ridges`.**
 
-## 9. Extra Experiment: RL Generalization to Unseen Maps
+![Highland Ridges And Slopes paths](results/figures/slope_ridges_paths.png)
 
-The main RL experiments train and evaluate DQN/PPO on the same scenario map. To test whether the learned policies generalize, an extra experiment evaluates the saved DQN/PPO models on unseen maps generated from the same scenario settings but with different random seeds. No additional training is performed.
+**Figure. Individual method paths for `slope_ridges`. Failed trajectories are marked with an `X`.**
 
-### 9.1 Generalization Result Table
+![Highland Ridges And Slopes individual method paths](results/figures/slope_ridges_path_panels.png)
+
+**Figure. Combined paths for `shadow_comm`.**
+
+![Polar Shadow And Communication Gaps paths](results/figures/shadow_comm_paths.png)
+
+**Figure. Individual method paths for `shadow_comm`. Failed trajectories are marked with an `X`.**
+
+![Polar Shadow And Communication Gaps individual method paths](results/figures/shadow_comm_path_panels.png)
+
+**Figure. Combined paths for `complex_moon`.**
+
+![Integrated Lunar Industrial Terrain paths](results/figures/complex_moon_paths.png)
+
+**Figure. Individual method paths for `complex_moon`. Failed trajectories are marked with an `X`.**
+
+![Integrated Lunar Industrial Terrain individual method paths](results/figures/complex_moon_path_panels.png)
+
+**Figure. Combined paths for `low_battery_bad_case`.**
+
+![Low Battery Bad Case paths](results/figures/low_battery_bad_case_paths.png)
+
+**Figure. Individual method paths for `low_battery_bad_case`. Failed trajectories are marked with an `X`.**
+
+![Low Battery Bad Case individual method paths](results/figures/low_battery_bad_case_path_panels.png)
+
+## 6. Reinforcement Learning Training and Unseen-Map Test
+
+DQN and PPO are trained on their corresponding scenario maps. To test whether these policies generalize beyond the training map, the saved models are evaluated on unseen maps generated from the same scenario settings but different random seeds. No additional training is performed for this test.
+
+**Figure 5. DQN/PPO training reward curves.**
+
+![RL training reward](results/figures/rl_training_reward.png)
+
+**Figure 6. DQN/PPO unseen-map pass/fail matrix.**
 
 ![RL generalization matrix](results/figures/rl_generalization_matrix.png)
 
-| train_scenario       | method         | train_seed | test_seed | path_found | energy_feasible | task_success | energy   | battery_capacity | energy_margin |
-| -------------------- | -------------- | ---------- | --------- | ---------- | --------------- | ------------ | -------- | ---------------- | ------------- |
-| baseline             | DQN unseen-map | 101        | 9101      | 1          | 1               | 1            | 89.0025  | 90.0             | 0.9975        |
-| baseline             | PPO unseen-map | 101        | 9101      | 1          | 1               | 1            | 89.0025  | 90.0             | 0.9975        |
-| crater_field         | DQN unseen-map | 202        | 9202      | 1          | 1               | 1            | 87.3412  | 90.0             | 2.6588        |
-| crater_field         | PPO unseen-map | 202        | 9202      | 1          | 1               | 1            | 87.3412  | 90.0             | 2.6588        |
-| slope_ridges         | DQN unseen-map | 303        | 9303      | 0          | 1               | 0            | 90.176   | 92.0             | 1.824         |
-| slope_ridges         | PPO unseen-map | 303        | 9303      | 0          | 1               | 0            | 90.176   | 92.0             | 1.824         |
-| shadow_comm          | DQN unseen-map | 404        | 9404      | 0          | 1               | 0            | 117.7826 | 118.0            | 0.2174        |
-| shadow_comm          | PPO unseen-map | 404        | 9404      | 0          | 1               | 0            | 117.7826 | 118.0            | 0.2174        |
-| complex_moon         | DQN unseen-map | 505        | 9505      | 1          | 1               | 1            | 96.609   | 108.0            | 11.391        |
-| complex_moon         | PPO unseen-map | 505        | 9505      | 1          | 1               | 1            | 96.609   | 108.0            | 11.391        |
-| low_battery_bad_case | DQN unseen-map | 606        | 9606      | 0          | 1               | 0            | 111.9061 | 112.0            | 0.0939        |
-| low_battery_bad_case | PPO unseen-map | 606        | 9606      | 0          | 1               | 0            | 111.9061 | 112.0            | 0.0939        |
-
-### 9.2 Generalization Summary
+### 6.1 Unseen-Map Summary
 
 | method         | sum | count | pass_rate |
 | -------------- | --- | ----- | --------- |
 | DQN unseen-map | 3   | 6     | 0.5       |
 | PPO unseen-map | 3   | 6     | 0.5       |
 
-The result measures scenario-specific policy transfer to a new map seed. If pass rates are low, the conclusion is that the current DQN/PPO policies are not robust map-generalization planners; they mainly learn behavior for the map distribution seen during training.
+The unseen-map test shows whether the learned policies transfer to new maps. In this implementation, RL policies have limited map-structural input, so their transfer performance should be interpreted cautiously.
 
-## 10. Extra Experiment: Online Local-View Replanning
+## 7. Online Local-View Replanning
 
-The main experiment assumes a fully known offline map. A second extra experiment relaxes this assumption: the rover starts with an unknown map and updates only a local circular sensing window around its current position. Unknown cells are treated as traversable with neutral terrain estimates until they are observed.
+The offline assumption is relaxed in this experiment. The rover starts with an unknown map and reveals only a circular local sensing window around its current position. Unknown cells are treated as traversable with neutral terrain estimates until observed. Methods replan using the currently known map. A D* Lite-style baseline is implemented as repeated risk-aware replanning after each sensing update; it captures the behavioral idea of D*/D* Lite without implementing incremental priority-queue optimization.
 
-This online experiment evaluates repeated local replanning methods, including Random-online, DFS-online, BFS-online, Greedy-online, A\* shortest-online, A\* risk-aware-online, and a **D\* Lite-style** replanning baseline. The D\* Lite-style method is implemented as local-map risk-aware replanning after each sensing update. It captures the experiment-level behavior of D\*/D\* Lite, namely replanning as the map is incrementally revealed, but it is not optimized for D\* Lite's incremental priority-queue efficiency.
-
-DQN/PPO are also evaluated in this section using their saved policies and safety executor, but they are not retrained specifically for partial observability.
+**Figure 7. Online local-view pass/fail matrix.**
 
 ![Online task outcome matrix](results/figures/online_task_outcome_matrix.png)
 
-### 10.1 Local Belief Update Visualization
+### 7.1 Local Belief Update Examples
 
-In the following figures, dark cells are still unknown to the rover. Revealed cells are inside the local sensing windows accumulated along the executed trajectory. The yellow square marks the current rover position at each snapshot.
+Dark cells are unknown. Revealed cells are inside accumulated local sensing windows. The yellow square marks the current rover position. Battery use is shown as a percentage of the scenario-specific budget.
+
+**Figure 8. Failure example: D* Lite-style replanning in `shadow_comm`. The rover nearly reaches the target but exceeds the battery budget.**
 
 ![Shadow communication online belief update](results/figures/online/shadow_comm_dastar_lite-style_belief_sequence.png)
 
+**Figure 9. Success example: D* Lite-style replanning in `low_battery_bad_case`. The rover reaches the target within the battery budget.**
+
 ![Low battery online belief update](results/figures/online/low_battery_bad_case_dastar_lite-style_belief_sequence.png)
 
-### 10.2 Online Summary
+### 7.2 Online Summary
 
 | method               | sum | count | pass_rate |
 | -------------------- | --- | ----- | --------- |
-| A* risk-aware-online | 5   | 6     | 0.8333    |
+| Random-online        | 0   | 6     | 0.0       |
+| DFS-online           | 1   | 6     | 0.1667    |
 | A* shortest-online   | 2   | 6     | 0.3333    |
 | BFS-online           | 2   | 6     | 0.3333    |
-| D* Lite-style        | 5   | 6     | 0.8333    |
-| DFS-online           | 1   | 6     | 0.1667    |
-| DQN-online           | 5   | 6     | 0.8333    |
 | Greedy-online        | 4   | 6     | 0.6667    |
+| A* risk-aware-online | 5   | 6     | 0.8333    |
+| D* Lite-style        | 5   | 6     | 0.8333    |
+| DQN-online           | 5   | 6     | 0.8333    |
 | PPO-online           | 5   | 6     | 0.8333    |
-| Random-online        | 0   | 6     | 0.0       |
 
-### 10.3 Online Raw Metrics
+## 8. Scale-Up Experiment
 
-| scenario             | method               | path_found | energy_feasible | task_success | energy   | battery_capacity | replan_count | collision_fail | known_cell_ratio |
-| -------------------- | -------------------- | ---------- | --------------- | ------------ | -------- | ---------------- | ------------ | -------------- | ---------------- |
-| baseline             | Random-online        | 0          | 0               | 0            | 90.6778  | 90.0             | 47           | 0              | 0.2652           |
-| baseline             | DFS-online           | 1          | 1               | 1            | 83.0158  | 90.0             | 36           | 0              | 0.2983           |
-| baseline             | BFS-online           | 1          | 1               | 1            | 84.8194  | 90.0             | 36           | 0              | 0.2953           |
-| baseline             | Greedy-online        | 1          | 1               | 1            | 86.3397  | 90.0             | 43           | 0              | 0.3146           |
-| baseline             | A* shortest-online   | 1          | 1               | 1            | 83.0967  | 90.0             | 36           | 0              | 0.2958           |
-| baseline             | A* risk-aware-online | 1          | 1               | 1            | 81.5559  | 90.0             | 37           | 0              | 0.2968           |
-| baseline             | D* Lite-style        | 1          | 1               | 1            | 81.5559  | 90.0             | 37           | 0              | 0.2968           |
-| baseline             | DQN-online           | 1          | 1               | 1            | 86.3397  | 90.0             | 0            | 0              | nan              |
-| baseline             | PPO-online           | 1          | 1               | 1            | 86.3397  | 90.0             | 0            | 0              | nan              |
-| crater_field         | Random-online        | 0          | 0               | 0            | 90.241   | 90.0             | 42           | 0              | 0.2528           |
-| crater_field         | DFS-online           | 1          | 0               | 0            | 90.6078  | 90.0             | 38           | 0              | 0.3017           |
-| crater_field         | BFS-online           | 1          | 0               | 0            | 91.9697  | 90.0             | 39           | 0              | 0.3017           |
-| crater_field         | Greedy-online        | 1          | 1               | 1            | 89.8084  | 90.0             | 42           | 0              | 0.3116           |
-| crater_field         | A* shortest-online   | 1          | 0               | 0            | 90.7396  | 90.0             | 38           | 0              | 0.2993           |
-| crater_field         | A* risk-aware-online | 1          | 1               | 1            | 85.0799  | 90.0             | 40           | 0              | 0.3067           |
-| crater_field         | D* Lite-style        | 1          | 1               | 1            | 85.0799  | 90.0             | 40           | 0              | 0.3067           |
-| crater_field         | DQN-online           | 1          | 1               | 1            | 88.9938  | 90.0             | 0            | 0              | nan              |
-| crater_field         | PPO-online           | 1          | 1               | 1            | 88.9938  | 90.0             | 0            | 0              | nan              |
-| slope_ridges         | Random-online        | 0          | 0               | 0            | 94.5123  | 92.0             | 52           | 0              | 0.2706           |
-| slope_ridges         | DFS-online           | 0          | 0               | 0            | 94.6579  | 92.0             | 38           | 0              | 0.2444           |
-| slope_ridges         | BFS-online           | 1          | 0               | 0            | 92.3641  | 92.0             | 40           | 0              | 0.3032           |
-| slope_ridges         | Greedy-online        | 1          | 1               | 1            | 88.0214  | 92.0             | 38           | 0              | 0.3017           |
-| slope_ridges         | A* shortest-online   | 1          | 1               | 1            | 91.0057  | 92.0             | 38           | 0              | 0.2993           |
-| slope_ridges         | A* risk-aware-online | 1          | 1               | 1            | 91.6445  | 92.0             | 39           | 0              | 0.3057           |
-| slope_ridges         | D* Lite-style        | 1          | 1               | 1            | 91.6445  | 92.0             | 39           | 0              | 0.3057           |
-| slope_ridges         | DQN-online           | 1          | 1               | 1            | 88.3049  | 92.0             | 0            | 0              | nan              |
-| slope_ridges         | PPO-online           | 1          | 1               | 1            | 88.3049  | 92.0             | 0            | 0              | nan              |
-| shadow_comm          | Random-online        | 0          | 0               | 0            | 119.0299 | 118.0            | 42           | 0              | 0.2622           |
-| shadow_comm          | DFS-online           | 0          | 0               | 0            | 120.7583 | 118.0            | 34           | 0              | 0.2706           |
-| shadow_comm          | BFS-online           | 0          | 0               | 0            | 119.5465 | 118.0            | 36           | 0              | 0.2726           |
-| shadow_comm          | Greedy-online        | 0          | 0               | 0            | 118.4793 | 118.0            | 45           | 0              | 0.2356           |
-| shadow_comm          | A* shortest-online   | 0          | 0               | 0            | 122.0507 | 118.0            | 35           | 0              | 0.2711           |
-| shadow_comm          | A* risk-aware-online | 0          | 0               | 0            | 118.1149 | 118.0            | 41           | 0              | 0.3002           |
-| shadow_comm          | D* Lite-style        | 0          | 0               | 0            | 118.1149 | 118.0            | 41           | 0              | 0.3002           |
-| shadow_comm          | DQN-online           | 1          | 1               | 1            | 117.7584 | 118.0            | 0            | 0              | nan              |
-| shadow_comm          | PPO-online           | 1          | 1               | 1            | 117.7584 | 118.0            | 0            | 0              | nan              |
-| complex_moon         | Random-online        | 0          | 0               | 0            | 109.3046 | 108.0            | 41           | 0              | 0.2296           |
-| complex_moon         | DFS-online           | 0          | 0               | 0            | 108.6132 | 108.0            | 41           | 0              | 0.3042           |
-| complex_moon         | BFS-online           | 1          | 1               | 1            | 107.054  | 108.0            | 43           | 0              | 0.3141           |
-| complex_moon         | Greedy-online        | 0          | 0               | 0            | 108.8561 | 108.0            | 37           | 0              | 0.2277           |
-| complex_moon         | A* shortest-online   | 0          | 0               | 0            | 110.3383 | 108.0            | 42           | 0              | 0.3042           |
-| complex_moon         | A* risk-aware-online | 1          | 1               | 1            | 101.8404 | 108.0            | 44           | 0              | 0.318            |
-| complex_moon         | D* Lite-style        | 1          | 1               | 1            | 101.8404 | 108.0            | 44           | 0              | 0.318            |
-| complex_moon         | DQN-online           | 0          | 1               | 0            | 107.1127 | 108.0            | 0            | 0              | nan              |
-| complex_moon         | PPO-online           | 0          | 1               | 0            | 107.1127 | 108.0            | 0            | 0              | nan              |
-| low_battery_bad_case | Random-online        | 0          | 0               | 0            | 113.2725 | 112.0            | 47           | 0              | 0.2869           |
-| low_battery_bad_case | DFS-online           | 0          | 0               | 0            | 113.7844 | 112.0            | 34           | 0              | 0.2835           |
-| low_battery_bad_case | BFS-online           | 0          | 0               | 0            | 115.1867 | 112.0            | 35           | 0              | 0.277            |
-| low_battery_bad_case | Greedy-online        | 1          | 1               | 1            | 110.795  | 112.0            | 43           | 0              | 0.317            |
-| low_battery_bad_case | A* shortest-online   | 0          | 0               | 0            | 113.7844 | 112.0            | 34           | 0              | 0.2835           |
-| low_battery_bad_case | A* risk-aware-online | 1          | 1               | 1            | 106.2901 | 112.0            | 40           | 0              | 0.3081           |
-| low_battery_bad_case | D* Lite-style        | 1          | 1               | 1            | 106.2901 | 112.0            | 40           | 0              | 0.3081           |
-| low_battery_bad_case | DQN-online           | 1          | 1               | 1            | 110.795  | 112.0            | 0            | 0              | nan              |
-| low_battery_bad_case | PPO-online           | 1          | 1               | 1            | 110.795  | 112.0            | 0            | 0              | nan              |
+The case-level experiments are extended by generating multiple random maps for each scenario family. This provides a more robust estimate of performance than a small number of hand-picked maps.
 
-The online results should be interpreted differently from the offline results. Online methods may fail because the local view does not reveal enough terrain structure early enough, because they choose an energy-inefficient route before discovering later hazards, or because their replanning strategy is too myopic under battery constraints.
+This scale-up experiment uses `6` scenario families and `8` random maps per scenario family for each setting. Across the offline and online settings, this corresponds to `96` generated map-setting pairs and `624` method evaluations.
 
-## 11. Output Files
+**Figure 10. Scale-up pass rates for the offline full-map setting.**
 
-- Main runner: `scripts/run_lunar_path_experiments.py`
-- Environment module: `lunar_path/environment.py`
-- Method modules: `lunar_path/methods/`
-- Metric CSV: `experiments/results/metrics.csv`
-- RL generalization CSV: `experiments/results/generalization_metrics.csv`
-- Online local-view CSV: `experiments/results/online_metrics.csv`
-- RL training logs: `experiments/results/rl_training_logs.csv`
-- Saved RL weights: `experiments/results/models/`
-- Figure directory: `experiments/results/figures/`
-- Report file: `experiments/report.md`
+![Offline scale-up pass rate](results/figures/scale_up_offline_full_map_pass_rate.png)
+
+**Figure 11. Scale-up pass rates for the online local-view setting.**
+
+![Online scale-up pass rate](results/figures/scale_up_online_local_view_pass_rate.png)
+
+**Figure 12. Overall scale-up pass rate by method.**
+
+![Overall scale-up pass rate](results/figures/scale_up_overall_pass_rate.png)
+
+### 8.1 Scale-Up Aggregate Metrics
+
+| setting           | method               | pass_rate | mean_energy | mean_path_length |
+| ----------------- | -------------------- | --------- | ----------- | ---------------- |
+| offline_full_map  | A* shortest          | 0.3333    | 98.9549     | 47.3666          |
+| offline_full_map  | BFS                  | 0.3958    | 98.6664     | 47.4577          |
+| offline_full_map  | Greedy               | 0.4167    | 97.7807     | 51.0186          |
+| offline_full_map  | DQN                  | 0.4792    | 95.9512     | 51.5549          |
+| offline_full_map  | PPO                  | 0.4792    | 95.9512     | 51.5549          |
+| offline_full_map  | A* risk-aware        | 0.8542    | 90.0591     | 59.3775          |
+| online_local_view | BFS-online           | 0.2917    | 99.1878     | 46.684           |
+| online_local_view | A* shortest-online   | 0.3125    | 98.9786     | 46.4434          |
+| online_local_view | Greedy-online        | 0.3542    | 98.1591     | 51.5326          |
+| online_local_view | DQN-online           | 0.4792    | 95.9512     | 51.5549          |
+| online_local_view | PPO-online           | 0.4792    | 95.9512     | 51.5549          |
+| online_local_view | A* risk-aware-online | 0.5       | 77.4264     | 41.0924          |
+| online_local_view | D* Lite-style        | 0.5       | 77.4264     | 41.0924          |
+
+### 8.2 Offline Pass Rate by Scenario Family
+
+| method        | baseline | complex_moon | crater_field | low_battery_bad_case | shadow_comm | slope_ridges |
+| ------------- | -------- | ------------ | ------------ | -------------------- | ----------- | ------------ |
+| A* shortest   | 0.5      | 0.25         | 0.125        | 0.5                  | 0.625       | 0.0          |
+| BFS           | 0.5      | 0.375        | 0.125        | 0.625                | 0.625       | 0.125        |
+| Greedy        | 0.625    | 0.125        | 0.125        | 0.625                | 0.75        | 0.25         |
+| DQN           | 0.625    | 0.375        | 0.125        | 0.75                 | 0.75        | 0.25         |
+| PPO           | 0.625    | 0.375        | 0.125        | 0.75                 | 0.75        | 0.25         |
+| A* risk-aware | 1.0      | 1.0          | 0.25         | 1.0                  | 1.0         | 0.875        |
+
+### 8.3 Online Pass Rate by Scenario Family
+
+| method               | baseline | complex_moon | crater_field | low_battery_bad_case | shadow_comm | slope_ridges |
+| -------------------- | -------- | ------------ | ------------ | -------------------- | ----------- | ------------ |
+| BFS-online           | 0.5      | 0.125        | 0.125        | 0.375                | 0.5         | 0.125        |
+| A* shortest-online   | 0.5      | 0.25         | 0.125        | 0.375                | 0.625       | 0.0          |
+| Greedy-online        | 0.375    | 0.125        | 0.125        | 0.5                  | 0.75        | 0.25         |
+| DQN-online           | 0.625    | 0.375        | 0.125        | 0.75                 | 0.75        | 0.25         |
+| PPO-online           | 0.625    | 0.375        | 0.125        | 0.75                 | 0.75        | 0.25         |
+| A* risk-aware-online | 0.5      | 0.5          | 0.125        | 0.875                | 0.875       | 0.125        |
+| D* Lite-style        | 0.5      | 0.5          | 0.125        | 0.875                | 0.875       | 0.125        |
+
+## 9. Discussion
+
+The experiments support three main observations. First, shortest-path planning is not sufficient for lunar terrain because energy consumption depends strongly on slope, regolith, uphill movement, and illumination. Second, explicit cost modeling is valuable: A* risk-aware performs strongly because its planning objective matches the evaluation objective. Third, online local-view planning is harder than offline planning because early choices are made with incomplete terrain knowledge, which can lead to energy-inefficient routes before hazards are fully revealed.
+
+The reinforcement-learning results are mixed. DQN and PPO can find feasible routes in several settings, but their low-dimensional observation does not include a local map patch. As a result, the learned policies do not consistently outperform model-based risk-aware planning. A stronger RL formulation would likely require multi-channel local map observations and a CNN-based policy.
+
+## 10. Limitations
+
+- The lunar terrain is a simplified grid simulation rather than a high-fidelity rover dynamics simulator.
+- The offline experiment assumes a fully known map.
+- The online experiment uses a simplified local sensing model and neutral assumptions for unknown cells.
+- D* Lite-style replanning captures repeated replanning behavior but not optimized incremental D* Lite data structures.
+- DQN/PPO use compact state features rather than image-like local terrain patches.
+
+## 11. Conclusion
+
+This study shows that lunar industrial rover navigation should be treated as an energy-constrained and risk-aware planning problem rather than a shortest-path problem. Across representative cases and random-seed scale-up tests, risk-aware A* is the most reliable method because it directly optimizes terrain-dependent energy and mission risk while respecting battery capacity. Online local-view replanning reduces performance relative to full-map planning, but D* Lite-style and risk-aware replanning remain competitive when the map is incrementally revealed.
+
+## Output Files
+
+- Main report: `experiments/report.md`
+- Main metrics: `experiments/results/metrics.csv`
+- Online metrics: `experiments/results/online_metrics.csv`
+- Scale-up metrics: `experiments/results/scale_up_metrics.csv`
+- Scale-up summary: `experiments/results/scale_up_summary.csv`
+- RL model weights: `experiments/results/models/`
+- Figures: `experiments/results/figures/`

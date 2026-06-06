@@ -235,6 +235,11 @@ def plot_online_belief_sequence(
     import matplotlib.pyplot as plt
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    final_path = snapshots[-1]["path"] if snapshots else []
+    final_pos = final_path[-1] if final_path else true_map.start
+    final_energy = snapshots[-1]["energy_used"] if snapshots else 0.0
+    task_pass = final_pos == true_map.goal and final_energy <= true_map.battery_capacity
+    final_status = "PASS" if task_pass else "FAIL"
     cols = 3
     rows = int(np.ceil(len(snapshots) / cols))
     fig, axes = plt.subplots(rows, cols, figsize=(13, 4.2 * rows), constrained_layout=True)
@@ -247,11 +252,19 @@ def plot_online_belief_sequence(
         arr = np.array(snap["path"])
         if len(arr) > 1:
             ax.plot(arr[:, 1], arr[:, 0], color="#76ff03", lw=2.2)
-        ax.scatter([true_map.start[1]], [true_map.start[0]], c="#00e676", s=70, marker="o", edgecolor="black")
-        ax.scatter([true_map.goal[1]], [true_map.goal[0]], c="#ff1744", s=88, marker="*", edgecolor="black")
-        ax.scatter([snap["pos"][1]], [snap["pos"][0]], c="#fdd835", s=65, marker="s", edgecolor="black")
+        ax.scatter([true_map.start[1]], [true_map.start[0]], c="#00e676", s=70, marker="o", edgecolor="black", zorder=5)
+        current_x = snap["pos"][1]
+        current_y = snap["pos"][0]
+        if snap["pos"] == true_map.goal:
+            current_x += 0.55
+        ax.scatter([current_x], [current_y], c="#fdd835", s=70, marker="s", edgecolor="black", zorder=7)
+        ax.scatter([true_map.goal[1]], [true_map.goal[0]], c="white", s=155, marker="*", edgecolor="black", linewidths=1.2, zorder=8)
+        ax.scatter([true_map.goal[1]], [true_map.goal[0]], c="#ff1744", s=105, marker="*", edgecolor="black", linewidths=1.0, zorder=9)
+        battery_used = snap["energy_used"] / true_map.battery_capacity
+        battery_label = "100%+" if battery_used > 1.0 else f"{battery_used:.0%}"
+        status = "PASS" if snap["pos"] == true_map.goal and snap["energy_used"] <= true_map.battery_capacity else "RUN/FAIL"
         ax.set_title(
-            f"step {snap['step']} | known {snap['known_cell_ratio']:.0%} | energy {snap['energy_used']:.1f}",
+            f"step {snap['step']} | known {snap['known_cell_ratio']:.0%} | battery {battery_label} | {status}",
             fontsize=10,
             weight="bold",
         )
@@ -259,7 +272,6 @@ def plot_online_belief_sequence(
         ax.set_yticks([])
     for ax in axes_flat[len(snapshots):]:
         ax.axis("off")
-    fig.suptitle(f"Local Map Updates - {method} - {scenario.title}", fontsize=15, weight="bold")
     fig.savefig(out_dir / f"{scenario.name}_{method.lower().replace('*', 'astar').replace(' ', '_')}_belief_sequence.png", dpi=180, bbox_inches="tight")
     plt.close(fig)
 
@@ -333,7 +345,6 @@ def plot_online_outcome(results: pd.DataFrame, fig_dir: Path) -> None:
         linecolor="white",
         ax=ax,
     )
-    ax.set_title("Online Local-View Task Outcome Matrix", fontsize=14, weight="bold")
     ax.set_xlabel("Scenario")
     ax.set_ylabel("Method")
     ax.tick_params(axis="x", rotation=25)

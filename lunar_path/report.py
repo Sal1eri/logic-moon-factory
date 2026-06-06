@@ -21,96 +21,90 @@ def df_to_markdown(df: pd.DataFrame) -> str:
     return "\n".join([header_line, sep_line] + row_lines)
 
 
+def _read_optional(path: Path) -> pd.DataFrame:
+    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+
+
+def _pass_summary(metrics: pd.DataFrame) -> pd.DataFrame:
+    return (
+        metrics.groupby("method")["task_success"]
+        .agg(["sum", "count"])
+        .reset_index()
+        .assign(pass_rate=lambda df: df["sum"] / df["count"])
+        .sort_values(["pass_rate", "method"], ascending=[True, True])
+    )
+
+
+def _sort_pivot_by_overall(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    value_cols = [c for c in df.columns if c != "method"]
+    table = df.copy()
+    table["_overall"] = table[value_cols].mean(axis=1)
+    table = table.sort_values(["_overall", "method"], ascending=[True, True]).drop(columns=["_overall"])
+    return table
+
+
 def write_report(metrics: pd.DataFrame, scenarios: List[Scenario], out_path: Path) -> None:
+    results_dir = out_path.parent / "results"
+    generalization = _read_optional(results_dir / "generalization_metrics.csv")
+    online = _read_optional(results_dir / "online_metrics.csv")
+    scale_up = _read_optional(results_dir / "scale_up_summary.csv")
+    scale_up_metrics = _read_optional(results_dir / "scale_up_metrics.csv")
+
     success = metrics[metrics["path_found"] == 1].copy()
     best_cost = success.sort_values("total_cost").groupby("scenario").first().reset_index()
     best_energy = success.sort_values("energy").groupby("scenario").first().reset_index()
-    generalization_path = out_path.parent / "results" / "generalization_metrics.csv"
-    generalization = pd.read_csv(generalization_path) if generalization_path.exists() else pd.DataFrame()
-    online_path = out_path.parent / "results" / "online_metrics.csv"
-    online = pd.read_csv(online_path) if online_path.exists() else pd.DataFrame()
+
+    scenario_table = pd.DataFrame(
+        [
+            {
+                "scenario": s.name,
+                "terrain": s.title,
+                "craters": s.crater_count,
+                "rock_density": s.rock_density,
+                "shadow_patches": s.shadow_patches,
+                "comm_stations": len(s.comm_stations),
+                "battery_capacity": s.battery_capacity,
+            }
+            for s in scenarios
+        ]
+    )
 
     lines = [
-        "# Lunar Industrial Path Planning Experiment Report",
+        "# Energy-Aware Path Planning for Lunar Industrial Rovers under Terrain Risk and Local Sensing Constraints",
         "",
-        "## 1. Objective",
+        "## Abstract",
         "",
-        "This project studies path planning for an autonomous transport rover in a lunar industrial base. The simulated terrain is designed to resemble a simplified lunar surface, including crater fields, rock obstacles, elevation variation, steep ridges, soft regolith, permanent shadow regions, illumination differences, and communication blind zones.",
+        "This report studies energy-constrained path planning for a lunar industrial rover operating on moon-like terrain. The simulated environment contains DEM-like elevation, crater and rock obstacles, slope risk, soft regolith, illumination variation, communication coverage, and scenario-specific battery capacity. The study first evaluates offline full-map planning, where the complete terrain map is known before planning. It then adds two extensions: reinforcement-learning transfer to unseen random maps and online local-view replanning with incremental map updates. Results show that distance-only planning is insufficient under lunar terrain constraints. A risk-aware A* planner, which explicitly optimizes energy and terrain risk, is the most reliable method in both case-level and scale-up experiments.",
         "",
-        "The experiment compares eight methods:",
+        "**Keywords:** lunar rover, path planning, energy constraint, risk-aware A*, D* Lite-style replanning, reinforcement learning, local sensing",
         "",
-        "- **Random**: a stochastic baseline that samples feasible moves.",
-        "- **DFS**: depth-first search, a blind graph-search baseline that can produce long and energy-inefficient routes.",
-        "- **BFS**: breadth-first search, an unweighted graph-search baseline that minimizes the number of grid steps but ignores terrain energy.",
-        "- **Greedy**: a local best-first baseline using distance-to-goal and terrain cost.",
-        "- **A\\* shortest**: a geometric shortest-path baseline using distance and impassable obstacles.",
-        "- **A\\* risk-aware**: a cost-aware A\\* planner using slope, crater risk, regolith, illumination, and communication quality.",
-        "- **DQN**: a deep Q-network reinforcement learning agent trained with Stable-Baselines3.",
-        "- **PPO**: a policy-gradient reinforcement learning agent trained with Stable-Baselines3.",
+        "## 1. Introduction",
         "",
-        "DQN and PPO are evaluated with a lightweight safety executor: invalid moves, repeated cells, and immediately battery-depleting moves are rejected during rollout. This does not provide a global path solution to the RL agents; it only enforces rover safety constraints during execution.",
+        "Future lunar industrial activity will require mobile robots to transport equipment, resources, and samples across unstructured terrain. Unlike terrestrial road navigation, lunar surface mobility is affected by craters, rocks, steep slopes, soft regolith, poor illumination, communication gaps, and strict battery limits. A shortest geometric path may therefore fail even when it is collision-free.",
         "",
-        "## 2. Inputs and Outputs",
+        "The goal of this project is to compare classical search, heuristic planning, risk-aware planning, and reinforcement learning under these lunar constraints. The central question is whether a planner that explicitly models terrain-dependent energy and mission risk can outperform simpler path-planning baselines.",
         "",
-        "### Inputs",
+        "## 2. Problem Formulation",
         "",
-        "- Map size: `45 x 45` grid cells.",
-        "- Start: lunar base core area.",
-        "- Goal: resource extraction site or industrial target facility.",
-        "- Terrain layers: elevation, slope, obstacles, crater risk, soft regolith, illumination, and communication coverage.",
-        "- Action space: 8 movement directions, including cardinal and diagonal moves.",
-        "- RL reward: terminal reward for reaching the goal, terrain-dependent transition cost, invalid-move penalty, and potential-based distance shaping.",
-        "- Fairness control: all methods use the same map, start, goal, action directions, obstacle constraints, and evaluation metrics. The RL base reward uses the same transition cost optimized by risk-aware A\\*; distance shaping is potential-based and is used only to accelerate training.",
-        "- Battery constraint: a route is counted as a full task success only if a path is found and its estimated energy consumption does not exceed the scenario battery capacity.",
+        "The rover moves on a `45 x 45` grid map. A task starts at a lunar base location and ends at a target industrial site. A route is successful only if the rover reaches the goal and its accumulated energy consumption does not exceed the scenario battery capacity.",
         "",
-        "### Outputs",
+        "The main experiment assumes a **fully known offline lunar terrain map**. Before planning starts, the rover has access to all terrain layers. This is not a SLAM experiment. Online perception and partial map knowledge are studied separately in Section 8.",
         "",
-        "- Lunar environment visualization for each scenario.",
-        "- Path comparison visualization for each scenario.",
-        "- Deep RL training reward curves.",
-        "- Completed training episode chart.",
-        "- Cross-method metric comparison chart.",
-        "- Normalized metric heatmap.",
-        "- Battery feasibility and energy margin charts.",
-        "- Saved DQN/PPO model weights for each scenario.",
-        "- Raw metric CSV file.",
+        "Each cell stores the following map layers:",
         "",
-        "## 3. Lunar Simulation Environment",
-        "",
-        "### 3.1 Mapping Assumption",
-        "",
-        "This experiment assumes a **fully known offline lunar terrain map**. Before planning starts, the rover is assumed to have access to the complete simulated DEM-derived environment, including elevation, slope, obstacle locations, crater risk, regolith, illumination, communication coverage, and battery capacity.",
-        "",
-        "This means the current work is an offline path-planning study, not an online SLAM or exploration problem. Online perception, localization uncertainty, incremental mapping, dynamic obstacle discovery, and real-time map updates are outside the scope of this experiment.",
-        "",
-        "The planning problem can therefore be stated as:",
-        "",
-        "> Given a known lunar terrain map with DEM-derived slope, terrain risk, illumination, communication coverage, and battery constraints, plan an energy-feasible and risk-aware path for a lunar industrial rover.",
-        "",
-        "### 3.2 Terrain Layers",
-        "",
-        "| Variable | Meaning | Planning effect |",
+        "| Layer | Meaning | Role in planning |",
         "|---|---|---|",
-        "| elevation | Terrain height | Creates lunar ridges and depressions |",
-        "| slope | Local slope | Higher slope increases energy use and risk; extreme slope is impassable |",
-        "| obstacle | Rock or crater core | Impassable cell |",
-        "| crater_risk | Crater rim risk | Adds terrain hazard cost |",
-        "| regolith | Soft regolith level | Adds energy cost and traction risk |",
-        "| illumination | Sunlight intensity | Low illumination increases energy and thermal risk |",
-        "| communication | Communication quality | Poor coverage increases mission risk |",
+        "| elevation | DEM-like terrain height | Used for uphill energy cost |",
+        "| slope | local slope | Increases energy and terrain risk |",
+        "| obstacle | rock or crater core | Impassable cell |",
+        "| crater_risk | crater rim hazard | Adds risk cost |",
+        "| regolith | soft soil level | Increases traction energy cost |",
+        "| illumination | sunlight level | Low illumination increases energy cost |",
+        "| communication | communication quality | Poor coverage increases mission risk |",
         "",
-        "The map also stores a cell-level terrain score for visualization and local greedy scoring:",
-        "",
-        "```text",
-        "Cost = 1",
-        "     + 2.8 * slope",
-        "     + 2.2 * crater_risk",
-        "     + 1.7 * regolith",
-        "     + 1.6 * (1 - illumination)",
-        "     + 1.3 * (1 - communication)",
-        "```",
-        "",
-        "Energy is explicitly modeled at the transition level. Moving across different terrain consumes different energy. For a movement from cell `s` to next cell `s'`, the energy model is:",
+        "The transition-level energy model is:",
         "",
         "```text",
         "transition_energy = move_distance",
@@ -121,191 +115,266 @@ def write_report(metrics: pd.DataFrame, scenarios: List[Scenario], out_path: Pat
         "                     + 0.8 * (1 - illumination(s')))",
         "```",
         "",
-        "The total mission transition cost used by risk-aware A\\* and the RL base reward is:",
+        "The total risk-aware transition cost is:",
         "",
         "```text",
         "transition_cost = transition_energy",
         "                + 2.2 * crater_risk(s')",
         "                + 1.0 * slope(s')",
         "                + 1.3 * (1 - communication(s'))",
-        "RL_base_reward = -transition_cost",
         "```",
         "",
-        "During execution, energy is accumulated after every movement. If cumulative energy exceeds `battery_capacity`, the route immediately fails and the executed trajectory stops at the depletion point. This applies to Random, Greedy, A\\*, DQN, and PPO rollouts.",
+        "Battery use is accumulated during execution. If cumulative energy exceeds `battery_capacity`, the route immediately fails.",
         "",
-        "## 4. Experimental Scenarios",
+        "## 3. Methods",
+        "",
+        "Eight methods are compared in the offline full-map experiment:",
+        "",
+        "| Method | Description | Main limitation |",
+        "|---|---|---|",
+        "| Random | Random feasible movement baseline | No global objective |",
+        "| DFS | Depth-first graph search | Can produce long inefficient paths |",
+        "| BFS | Breadth-first graph search | Optimizes step count, not energy |",
+        "| Greedy | Local best-first movement | Can be locally trapped or energy-myopic |",
+        "| A* shortest | A* with geometric path cost | Ignores terrain energy and risk |",
+        "| A* risk-aware | A* with energy-risk transition cost and battery pruning | Requires known cost map |",
+        "| DQN | Deep Q-network trained per scenario | Limited map awareness in low-dimensional observation |",
+        "| PPO | Policy-gradient RL trained per scenario | Same limitation as DQN |",
+        "",
+        "DQN and PPO use a lightweight safety executor during rollout. Invalid actions, repeated cells, and immediately battery-depleting actions are rejected. This enforces rover safety constraints but does not give the RL agent a global planner.",
+        "",
+        "## 4. Experimental Setup",
+        "",
+        "Six lunar scenario families are generated. Battery capacities are selected from pilot runs to avoid trivial all-pass or all-fail outcomes.",
+        "",
+        df_to_markdown(scenario_table.round(4)),
+        "",
+        "The report evaluates four experimental settings:",
+        "",
+        "1. **Offline full-map case study:** all eight methods are tested on the six representative scenario maps.",
+        "2. **RL unseen-map test:** saved DQN/PPO models are tested on same-family maps generated with new random seeds.",
+        "3. **Online local-view replanning:** the rover incrementally reveals a local sensing window and replans as the map is updated.",
+        "4. **Scale-up test:** multiple random maps per scenario family are generated to estimate pass rates statistically.",
+        "",
+        "## 5. Offline Full-Map Results",
+        "",
+        "**Figure 1. Pass/fail outcome matrix for the offline full-map experiment.**",
+        "",
+        "![Task outcome matrix](results/figures/task_outcome_matrix.png)",
+        "",
+        "**Figure 2. Compact cross-method metric matrix. Values are normalized within each scenario; lower is better.**",
+        "",
+        "![Metrics comparison](results/figures/metrics_comparison.png)",
+        "",
+        "**Figure 3. Normalized metric heatmap. Lower values are better.**",
+        "",
+        "![Metrics heatmap](results/figures/metrics_heatmap.png)",
+        "",
+        "**Figure 4. Battery energy margin by method and scenario.**",
+        "",
+        "![Battery energy margin](results/figures/battery_energy_margin.png)",
+        "",
+        "### 5.1 Offline Summary",
+        "",
+        df_to_markdown(_pass_summary(metrics).round(4)),
+        "",
+        "### 5.2 Lowest-Cost and Lowest-Energy Routes",
+        "",
+        "**Lowest total cost by scenario:**",
+        "",
+        df_to_markdown(best_cost[["scenario", "method", "total_cost", "path_length", "energy", "terrain_risk"]].round(4)),
+        "",
+        "**Lowest energy by scenario:**",
+        "",
+        df_to_markdown(best_energy[["scenario", "method", "energy", "total_cost", "path_length", "terrain_risk"]].round(4)),
+        "",
+        "### 5.3 Representative Path Visualizations",
+        "",
+        "The following figures show representative combined and per-method path visualizations. Overlapping paths in combined figures are slightly offset for readability.",
         "",
     ]
 
     for scenario in scenarios:
-        lines.extend([
-            f"### {scenario.name}: {scenario.title}",
-            "",
-            f"- Crater count: {scenario.crater_count}",
-            f"- Rock density: {scenario.rock_density}",
-            f"- Soft regolith patches: {scenario.regolith_patches}",
-            f"- Shadow patches: {scenario.shadow_patches}",
-            f"- Communication stations: {len(scenario.comm_stations)}",
-            f"- Elevation variation scale: {scenario.slope_scale}",
-            f"- RL training timesteps per deep RL method: {scenario.rl_timesteps}",
-            f"- Battery capacity: {scenario.battery_capacity}",
-            "",
-            f"![{scenario.title} environment](results/figures/{scenario.name}_environment.png)",
-            "",
-            f"![{scenario.title} paths](results/figures/{scenario.name}_paths.png)",
-            "",
-            f"![{scenario.title} individual method paths](results/figures/{scenario.name}_path_panels.png)",
-            "",
-        ])
+        lines.extend(
+            [
+                f"**Figure. Combined paths for `{scenario.name}`.**",
+                "",
+                f"![{scenario.title} paths](results/figures/{scenario.name}_paths.png)",
+                "",
+                f"**Figure. Individual method paths for `{scenario.name}`. Failed trajectories are marked with an `X`.**",
+                "",
+                f"![{scenario.title} individual method paths](results/figures/{scenario.name}_path_panels.png)",
+                "",
+            ]
+        )
 
-    lines.extend([
-        "## 5. Visual Results",
-        "",
-        "### 5.1 Metric Comparison",
-        "",
-        "![Metrics comparison](results/figures/metrics_comparison.png)",
-        "",
-        "### 5.2 Normalized Metric Heatmap",
-        "",
-        "Lower normalized values indicate better performance for the corresponding metric.",
-        "",
-        "![Metrics heatmap](results/figures/metrics_heatmap.png)",
-        "",
-        "### 5.3 Battery Constraint Results",
-        "",
-        "![Battery task success](results/figures/battery_task_success.png)",
-        "",
-        "![Battery energy margin](results/figures/battery_energy_margin.png)",
-        "",
-        "![Task outcome matrix](results/figures/task_outcome_matrix.png)",
-        "",
-        "### 5.4 Deep RL Training Curves",
-        "",
-        "![RL training reward](results/figures/rl_training_reward.png)",
-        "",
-        "![RL training episodes](results/figures/rl_training_episodes.png)",
-        "",
-        "## 6. Result Summary",
-        "",
-        "### 6.1 Raw Metric Table",
-        "",
-        df_to_markdown(metrics.round(4)),
-        "",
-        "### 6.2 Lowest Total Cost Method per Scenario",
-        "",
-        df_to_markdown(best_cost[["scenario", "method", "total_cost", "path_length", "energy", "terrain_risk"]].round(4)),
-        "",
-        "### 6.3 Lowest Energy Method per Scenario",
-        "",
-        df_to_markdown(best_energy[["scenario", "method", "energy", "total_cost", "path_length", "terrain_risk"]].round(4)),
-        "",
-        "## 7. Analysis",
-        "",
-        "1. **Random** is included only as a weak lower-bound baseline. It usually fails in dense crater or high-risk maps because it has no global objective.",
-        "",
-        "2. **Greedy** improves over Random by moving toward the goal, but it is local and can get trapped near crater rims or obstacle pockets.",
-        "",
-        "3. **DFS** and **BFS** are useful classical baselines. BFS can find a step-short path, while DFS may find a much longer route depending on search order. Neither method understands energy, illumination, communication, or crater risk during planning.",
-        "",
-        "4. **A\\* shortest** usually finds a short geometric route, but it may cross crater rims, steep slopes, shadow regions, or low-communication zones because it ignores mission risk.",
-        "",
-        "5. **A\\* risk-aware** explicitly models lunar terrain cost. It often selects a longer route, but the route is safer and more realistic for lunar industrial logistics.",
-        "",
-        "6. **DQN** and **PPO** learn policies through environment interaction. They can produce feasible paths when reward shaping is sufficient, but their stability depends on training budget and scenario complexity. In the low-battery bad case, the neural policies avoid immediate battery depletion but still fail to reach the goal, which is an important negative result.",
-        "",
-        "7. The battery capacities are intentionally tuned to create mixed outcomes rather than an all-pass or all-fail benchmark. In easier settings, several classical and RL methods can finish. In harder settings, methods fail for different reasons: blind search wastes energy, shortest-path search ignores terrain cost, greedy planning can be locally efficient but not globally safe, and RL policies may conserve energy without reaching the goal. A\\* risk-aware is the only method designed to explicitly optimize the same energy-risk cost used by the evaluation, which explains its stronger pass rate.",
-        "",
-        "8. Lunar path planning is not a normal shortest-path problem. After slope, illumination, communication, regolith, and battery capacity are introduced, the shortest path and the best mission path often differ.",
-        "",
-        "## 8. Conclusion",
-        "",
-        "The experiment demonstrates that moon-like terrain constraints change the path-planning objective. Distance-only planning is not enough for lunar industrial transportation. A risk-aware planner is a strong baseline for known static maps, while deep reinforcement learning becomes more relevant when future tasks include unknown terrain, dynamic hazards, multi-rover coordination, or long-horizon task scheduling.",
-        "",
-        "## 9. Extra Experiment: RL Generalization to Unseen Maps",
-        "",
-        "The main RL experiments train and evaluate DQN/PPO on the same scenario map. To test whether the learned policies generalize, an extra experiment evaluates the saved DQN/PPO models on unseen maps generated from the same scenario settings but with different random seeds. No additional training is performed.",
-        "",
-    ])
-
-    if generalization.empty:
-        lines.extend([
-            "_Generalization results have not been generated yet._",
+    lines.extend(
+        [
+            "## 6. Reinforcement Learning Training and Unseen-Map Test",
             "",
-        ])
-    else:
-        gen_summary = generalization.groupby("method")["task_success"].agg(["sum", "count"]).reset_index()
-        gen_summary["pass_rate"] = gen_summary["sum"] / gen_summary["count"]
-        lines.extend([
-            "### 9.1 Generalization Result Table",
+            "DQN and PPO are trained on their corresponding scenario maps. To test whether these policies generalize beyond the training map, the saved models are evaluated on unseen maps generated from the same scenario settings but different random seeds. No additional training is performed for this test.",
+            "",
+            "**Figure 5. DQN/PPO training reward curves.**",
+            "",
+            "![RL training reward](results/figures/rl_training_reward.png)",
+            "",
+            "**Figure 6. DQN/PPO unseen-map pass/fail matrix.**",
             "",
             "![RL generalization matrix](results/figures/rl_generalization_matrix.png)",
             "",
-            df_to_markdown(generalization[["train_scenario", "method", "train_seed", "test_seed", "path_found", "energy_feasible", "task_success", "energy", "battery_capacity", "energy_margin"]].round(4)),
-            "",
-            "### 9.2 Generalization Summary",
-            "",
-            df_to_markdown(gen_summary.round(4)),
-            "",
-            "The result measures scenario-specific policy transfer to a new map seed. If pass rates are low, the conclusion is that the current DQN/PPO policies are not robust map-generalization planners; they mainly learn behavior for the map distribution seen during training.",
-            "",
-        ])
+        ]
+    )
 
-    lines.extend([
-        "## 10. Extra Experiment: Online Local-View Replanning",
-        "",
-        "The main experiment assumes a fully known offline map. A second extra experiment relaxes this assumption: the rover starts with an unknown map and updates only a local circular sensing window around its current position. Unknown cells are treated as traversable with neutral terrain estimates until they are observed.",
-        "",
-        "This online experiment evaluates repeated local replanning methods, including Random-online, DFS-online, BFS-online, Greedy-online, A\\* shortest-online, A\\* risk-aware-online, and a **D\\* Lite-style** replanning baseline. The D\\* Lite-style method is implemented as local-map risk-aware replanning after each sensing update. It captures the experiment-level behavior of D\\*/D\\* Lite, namely replanning as the map is incrementally revealed, but it is not optimized for D\\* Lite's incremental priority-queue efficiency.",
-        "",
-        "DQN/PPO are also evaluated in this section using their saved policies and safety executor, but they are not retrained specifically for partial observability.",
-        "",
-    ])
+    if not generalization.empty:
+        gen_summary = generalization.groupby("method")["task_success"].agg(["sum", "count"]).reset_index()
+        gen_summary["pass_rate"] = gen_summary["sum"] / gen_summary["count"]
+        gen_summary = gen_summary.sort_values(["pass_rate", "method"], ascending=[True, True])
+        lines.extend(
+            [
+                "### 6.1 Unseen-Map Summary",
+                "",
+                df_to_markdown(gen_summary.round(4)),
+                "",
+                "The unseen-map test shows whether the learned policies transfer to new maps. In this implementation, RL policies have limited map-structural input, so their transfer performance should be interpreted cautiously.",
+                "",
+            ]
+        )
 
-    if online.empty:
-        lines.extend([
-            "_Online local-view results have not been generated yet._",
+    lines.extend(
+        [
+            "## 7. Online Local-View Replanning",
             "",
-        ])
-    else:
-        online_summary = online.groupby("method")["task_success"].agg(["sum", "count"]).reset_index()
-        online_summary["pass_rate"] = online_summary["sum"] / online_summary["count"]
-        lines.extend([
+            "The offline assumption is relaxed in this experiment. The rover starts with an unknown map and reveals only a circular local sensing window around its current position. Unknown cells are treated as traversable with neutral terrain estimates until observed. Methods replan using the currently known map. A D* Lite-style baseline is implemented as repeated risk-aware replanning after each sensing update; it captures the behavioral idea of D*/D* Lite without implementing incremental priority-queue optimization.",
+            "",
+            "**Figure 7. Online local-view pass/fail matrix.**",
+            "",
             "![Online task outcome matrix](results/figures/online_task_outcome_matrix.png)",
             "",
-            "### 10.1 Local Belief Update Visualization",
+            "### 7.1 Local Belief Update Examples",
             "",
-            "In the following figures, dark cells are still unknown to the rover. Revealed cells are inside the local sensing windows accumulated along the executed trajectory. The yellow square marks the current rover position at each snapshot.",
+            "Dark cells are unknown. Revealed cells are inside accumulated local sensing windows. The yellow square marks the current rover position. Battery use is shown as a percentage of the scenario-specific budget.",
+            "",
+            "**Figure 8. Failure example: D* Lite-style replanning in `shadow_comm`. The rover nearly reaches the target but exceeds the battery budget.**",
             "",
             "![Shadow communication online belief update](results/figures/online/shadow_comm_dastar_lite-style_belief_sequence.png)",
             "",
+            "**Figure 9. Success example: D* Lite-style replanning in `low_battery_bad_case`. The rover reaches the target within the battery budget.**",
+            "",
             "![Low battery online belief update](results/figures/online/low_battery_bad_case_dastar_lite-style_belief_sequence.png)",
             "",
-            "### 10.2 Online Summary",
-            "",
-            df_to_markdown(online_summary.round(4)),
-            "",
-            "### 10.3 Online Raw Metrics",
-            "",
-            df_to_markdown(online[["scenario", "method", "path_found", "energy_feasible", "task_success", "energy", "battery_capacity", "replan_count", "collision_fail", "known_cell_ratio"]].round(4)),
-            "",
-            "The online results should be interpreted differently from the offline results. Online methods may fail because the local view does not reveal enough terrain structure early enough, because they choose an energy-inefficient route before discovering later hazards, or because their replanning strategy is too myopic under battery constraints.",
-            "",
-        ])
+        ]
+    )
 
-    lines.extend([
-        "## 11. Output Files",
-        "",
-        "- Main runner: `scripts/run_lunar_path_experiments.py`",
-        "- Environment module: `lunar_path/environment.py`",
-        "- Method modules: `lunar_path/methods/`",
-        "- Metric CSV: `experiments/results/metrics.csv`",
-        "- RL generalization CSV: `experiments/results/generalization_metrics.csv`",
-        "- Online local-view CSV: `experiments/results/online_metrics.csv`",
-        "- RL training logs: `experiments/results/rl_training_logs.csv`",
-        "- Saved RL weights: `experiments/results/models/`",
-        "- Figure directory: `experiments/results/figures/`",
-        "- Report file: `experiments/report.md`",
-        "",
-    ])
+    if not online.empty:
+        online_summary = online.groupby("method")["task_success"].agg(["sum", "count"]).reset_index()
+        online_summary["pass_rate"] = online_summary["sum"] / online_summary["count"]
+        online_summary = online_summary.sort_values(["pass_rate", "method"], ascending=[True, True])
+        lines.extend(
+            [
+                "### 7.2 Online Summary",
+                "",
+                df_to_markdown(online_summary.round(4)),
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "## 8. Scale-Up Experiment",
+            "",
+            "The case-level experiments are extended by generating multiple random maps for each scenario family. This provides a more robust estimate of performance than a small number of hand-picked maps.",
+            "",
+        ]
+    )
+
+    if not scale_up.empty:
+        overall = (
+            scale_up.groupby(["setting", "method"])
+            .agg(
+                pass_rate=("pass_rate", "mean"),
+                mean_energy=("mean_energy", "mean"),
+                mean_path_length=("mean_path_length", "mean"),
+            )
+            .reset_index()
+            .sort_values(["setting", "pass_rate", "method"], ascending=[True, True, True])
+        )
+        if not scale_up_metrics.empty:
+            n_scenarios = scale_up_metrics["scenario"].nunique()
+            n_seeds = int(scale_up_metrics.groupby(["setting", "scenario"])["sample_seed"].nunique().max())
+            n_map_setting_pairs = scale_up_metrics[["setting", "scenario", "sample_seed"]].drop_duplicates().shape[0]
+            n_method_evals = len(scale_up_metrics)
+            lines.extend(
+                [
+                    f"This scale-up experiment uses `{n_scenarios}` scenario families and `{n_seeds}` random maps per scenario family for each setting. Across the offline and online settings, this corresponds to `{n_map_setting_pairs}` generated map-setting pairs and `{n_method_evals}` method evaluations.",
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                "**Figure 10. Scale-up pass rates for the offline full-map setting.**",
+                "",
+                "![Offline scale-up pass rate](results/figures/scale_up_offline_full_map_pass_rate.png)",
+                "",
+                "**Figure 11. Scale-up pass rates for the online local-view setting.**",
+                "",
+                "![Online scale-up pass rate](results/figures/scale_up_online_local_view_pass_rate.png)",
+                "",
+                "**Figure 12. Overall scale-up pass rate by method.**",
+                "",
+                "![Overall scale-up pass rate](results/figures/scale_up_overall_pass_rate.png)",
+                "",
+                "### 8.1 Scale-Up Aggregate Metrics",
+                "",
+                df_to_markdown(overall.round(4)),
+                "",
+            ]
+        )
+        offline_table = _sort_pivot_by_overall(scale_up[scale_up["setting"] == "offline_full_map"].pivot(index="method", columns="scenario", values="pass_rate").reset_index())
+        online_table = _sort_pivot_by_overall(scale_up[scale_up["setting"] == "online_local_view"].pivot(index="method", columns="scenario", values="pass_rate").reset_index())
+        lines.extend(
+            [
+                "### 8.2 Offline Pass Rate by Scenario Family",
+                "",
+                df_to_markdown(offline_table.round(4)),
+                "",
+                "### 8.3 Online Pass Rate by Scenario Family",
+                "",
+                df_to_markdown(online_table.round(4)),
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            "## 9. Discussion",
+            "",
+            "The experiments support three main observations. First, shortest-path planning is not sufficient for lunar terrain because energy consumption depends strongly on slope, regolith, uphill movement, and illumination. Second, explicit cost modeling is valuable: A* risk-aware performs strongly because its planning objective matches the evaluation objective. Third, online local-view planning is harder than offline planning because early choices are made with incomplete terrain knowledge, which can lead to energy-inefficient routes before hazards are fully revealed.",
+            "",
+            "The reinforcement-learning results are mixed. DQN and PPO can find feasible routes in several settings, but their low-dimensional observation does not include a local map patch. As a result, the learned policies do not consistently outperform model-based risk-aware planning. A stronger RL formulation would likely require multi-channel local map observations and a CNN-based policy.",
+            "",
+            "## 10. Limitations",
+            "",
+            "- The lunar terrain is a simplified grid simulation rather than a high-fidelity rover dynamics simulator.",
+            "- The offline experiment assumes a fully known map.",
+            "- The online experiment uses a simplified local sensing model and neutral assumptions for unknown cells.",
+            "- D* Lite-style replanning captures repeated replanning behavior but not optimized incremental D* Lite data structures.",
+            "- DQN/PPO use compact state features rather than image-like local terrain patches.",
+            "",
+            "## 11. Conclusion",
+            "",
+            "This study shows that lunar industrial rover navigation should be treated as an energy-constrained and risk-aware planning problem rather than a shortest-path problem. Across representative cases and random-seed scale-up tests, risk-aware A* is the most reliable method because it directly optimizes terrain-dependent energy and mission risk while respecting battery capacity. Online local-view replanning reduces performance relative to full-map planning, but D* Lite-style and risk-aware replanning remain competitive when the map is incrementally revealed.",
+            "",
+            "## Output Files",
+            "",
+            "- Main report: `experiments/report.md`",
+            "- Main metrics: `experiments/results/metrics.csv`",
+            "- Online metrics: `experiments/results/online_metrics.csv`",
+            "- Scale-up metrics: `experiments/results/scale_up_metrics.csv`",
+            "- Scale-up summary: `experiments/results/scale_up_summary.csv`",
+            "- RL model weights: `experiments/results/models/`",
+            "- Figures: `experiments/results/figures/`",
+            "",
+        ]
+    )
 
     out_path.write_text("\n".join(lines), encoding="utf-8")

@@ -1,0 +1,79 @@
+setting,scenario,method,pass_rate,mean_energy,mean_path_length
+offline_full_map,baseline,A* risk-aware,1.0,79.13639531816051,57.012193308819754
+offline_full_map,baseline,A* shortest,0.5,84.15361491502348,47.319173824159215
+offline_full_map,baseline,BFS,0.5,84.21612076324668,47.06029034767603
+offline_full_map,baseline,DQN,0.625,82.3794455808777,52.74963017589621
+offline_full_map,baseline,Greedy,0.625,83.60747935711953,52.978183566489484
+offline_full_map,baseline,PPO,0.625,82.3794455808777,52.74963017589621
+offline_full_map,complex_moon,A* risk-aware,1.0,95.06982972015857,60.794678887547555
+offline_full_map,complex_moon,A* shortest,0.25,105.91609704513202,46.580212793480285
+offline_full_map,complex_moon,BFS,0.375,104.10989149006787,47.455212793480285
+offline_full_map,complex_moon,DQN,0.375,104.0853625428277,51.005465325174455
+offline_full_map,complex_moon,Greedy,0.125,108.17534179191667,49.27691193458118
+offline_full_map,complex_moon,PPO,0.375,104.0853625428277,51.005465325174455
+offline_full_map,crater_field,A* risk-aware,0.25,85.50193687662033,61.89087296526011
+offline_full_map,crater_field,A* shortest,0.125,90.58026123511655,44.82653313703993
+offline_full_map,crater_field,BFS,0.125,90.93594950263247,43.558766184073555
+offline_full_map,crater_field,DQN,0.125,88.82872307991447,48.65711575462401
+offline_full_map,crater_field,Greedy,0.125,90.06825488009446,48.26955262170046
+offline_full_map,crater_field,PPO,0.125,88.82872307991447,48.65711575462401
+offline_full_map,low_battery_bad_case,A* risk-aware,1.0,97.91962115005703,57.49442635585338
+offline_full_map,low_battery_bad_case,A* shortest,0.5,109.07948771379957,50.09950391004913
+offline_full_map,low_battery_bad_case,BFS,0.625,110.39567914244361,50.34950391004913
+offline_full_map,low_battery_bad_case,DQN,0.75,106.25215958953152,53.921203051150016
+offline_full_map,low_battery_bad_case,Greedy,0.625,107.29722539952992,53.313970004116385
+offline_full_map,low_battery_bad_case,PPO,0.75,106.25215958953152,53.921203051150016
+offline_full_map,shadow_comm,A* risk-aware,1.0,95.58212882740557,60.39087296526011
+offline_full_map,shadow_comm,A* shortest,0.625,109.82962827933076,50.7030573006424
+offline_full_map,shadow_comm,BFS,0.625,109.21115645317411,50.47450391004912
+offline_full_map,shadow_comm,DQN,0.75,103.60148924962374,53.26587296526011
+offline_full_map,shadow_comm,Greedy,0.75,105.11660150061539,53.43008652763321
+offline_full_map,shadow_comm,PPO,0.75,103.60148924962374,53.26587296526011
+offline_full_map,slope_ridges,A* risk-aware,0.875,87.14477281317717,58.6816635232505
+offline_full_map,slope_ridges,A* shortest,0.0,94.17034925886439,44.67120305115002
+offline_full_map,slope_ridges,BFS,0.125,93.12967581240547,45.847979746446654
+offline_full_map,slope_ridges,DQN,0.25,90.55997413390341,49.73033905932737
+offline_full_map,slope_ridges,Greedy,0.25,92.41919408186565,48.84277592640383
+offline_full_map,slope_ridges,PPO,0.25,90.55997413390341,49.73033905932737
+online_local_view,baseline,A* risk-aware-online,0.5,49.27093819975123,32.29683438038544
+online_local_view,baseline,A* shortest-online,0.5,84.33187139184055,47.54772721475249
+online_local_view,baseline,BFS-online,0.5,86.23539449140179,47.29252339470966
+online_local_view,baseline,D* Lite-style,0.5,49.27093819975123,32.29683438038544
+online_local_view,baseline,DQN-online,0.625,82.3794455808777,52.74963017589621
+online_local_view,baseline,Greedy-online,0.375,85.41881578993232,56.143921292465045
+online_local_view,baseline,PPO-online,0.625,82.3794455808777,52.74963017589621
+online_local_view,complex_moon,A* risk-aware-online,0.5,103.71184909639706,51.96409626996347
+online_local_view,complex_moon,A* shortest-online,0.25,105.43809632635147,45.66231957466684
+online_local_view,complex_moon,BFS-online,0.125,106.34937720969272,46.79099923110719
+online_local_view,complex_moon,D* Lite-style,0.5,103.71184909639706,51.96409626996347
+online_local_view,complex_moon,DQN-online,0.375,104.0853625428277,51.005465325174455
+online_local_view,complex_moon,Greedy-online,0.125,107.41919481855714,48.34340725563925
+online_local_view,complex_moon,PPO-online,0.375,104.0853625428277,51.005465325174455
+online_local_view,crater_field,A* risk-aware-online,0.125,44.783187525140036,23.716883092036777
+online_local_view,crater_field,A* shortest-online,0.125,90.60497102080247,42.18376618407356
+online_local_view,crater_field,BFS-online,0.125,90.32407442720297,42.42856236403073
+online_local_view,crater_field,D* Lite-style,0.125,44.783187525140036,23.716883092036777
+online_local_view,crater_field,DQN-online,0.125,88.82872307991447,48.65711575462401
+online_local_view,crater_field,Greedy-online,0.125,89.9032073358345,48.273232278140824
+online_local_view,crater_field,PPO-online,0.125,88.82872307991447,48.65711575462401
+online_local_view,low_battery_bad_case,A* risk-aware-online,0.875,105.34362816036064,52.31917382415922
+online_local_view,low_battery_bad_case,A* shortest-online,0.375,109.64181920020125,48.08173695708276
+online_local_view,low_battery_bad_case,BFS-online,0.375,108.95591357692241,49.0943000900063
+online_local_view,low_battery_bad_case,D* Lite-style,0.875,105.34362816036064,52.31917382415922
+online_local_view,low_battery_bad_case,DQN-online,0.75,106.25215958953152,53.921203051150016
+online_local_view,low_battery_bad_case,Greedy-online,0.5,109.0813424635152,53.92120305115002
+online_local_view,low_battery_bad_case,PPO-online,0.75,106.25215958953152,53.921203051150016
+online_local_view,shadow_comm,A* risk-aware-online,0.875,104.24898058797048,54.80140687119285
+online_local_view,shadow_comm,A* shortest-online,0.625,110.70147374992926,50.3280573006424
+online_local_view,shadow_comm,BFS-online,0.5,110.75866580134112,50.456736957082754
+online_local_view,shadow_comm,D* Lite-style,0.875,104.24898058797048,54.80140687119285
+online_local_view,shadow_comm,DQN-online,0.75,103.60148924962374,53.26587296526011
+online_local_view,shadow_comm,Greedy-online,0.75,104.83298657739878,53.50330983233657
+online_local_view,shadow_comm,PPO-online,0.75,103.60148924962374,53.26587296526011
+online_local_view,slope_ridges,A* risk-aware-online,0.125,57.2000041321283,31.455844122715703
+online_local_view,slope_ridges,A* shortest-online,0.0,93.15357459037908,44.856863222929846
+online_local_view,slope_ridges,BFS-online,0.125,92.50327026694116,44.04099923110719
+online_local_view,slope_ridges,D* Lite-style,0.125,57.2000041321283,31.455844122715703
+online_local_view,slope_ridges,DQN-online,0.25,90.55997413390341,49.73033905932737
+online_local_view,slope_ridges,Greedy-online,0.25,92.29885084574563,49.01066914521728
+online_local_view,slope_ridges,PPO-online,0.25,90.55997413390341,49.73033905932737
