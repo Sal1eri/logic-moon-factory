@@ -1,0 +1,20 @@
+[project]
+name = "moon_road"
+version = "0.1.0"
+description = "Energy-aware multi-agent task allocation simulation for a lunar factory"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "gymnasium>=0.29.1,<0.30",
+    "matplotlib>=3.10.7",
+    "networkx>=3.4.2",
+    "numpy>=1.26.4,<2",
+    "pandas>=2.3.3",
+    "pydantic>=2.12.5",
+    "scikit-learn>=1.7.2",
+    "scipy>=1.15.3",
+    "seaborn>=0.13.2",
+    "stable-baselines3>=2.3.0,<2.4.0",
+    "torch==2.2.2",
+    "tqdm>=4.67.1",
+]
