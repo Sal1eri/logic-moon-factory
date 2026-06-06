@@ -361,13 +361,107 @@ The main RL experiments train and evaluate DQN/PPO on the same scenario map. To 
 
 The result measures scenario-specific policy transfer to a new map seed. If pass rates are low, the conclusion is that the current DQN/PPO policies are not robust map-generalization planners; they mainly learn behavior for the map distribution seen during training.
 
-## 10. Output Files
+## 10. Extra Experiment: Online Local-View Replanning
+
+The main experiment assumes a fully known offline map. A second extra experiment relaxes this assumption: the rover starts with an unknown map and updates only a local circular sensing window around its current position. Unknown cells are treated as traversable with neutral terrain estimates until they are observed.
+
+This online experiment evaluates repeated local replanning methods, including Random-online, DFS-online, BFS-online, Greedy-online, A\* shortest-online, A\* risk-aware-online, and a **D\* Lite-style** replanning baseline. The D\* Lite-style method is implemented as local-map risk-aware replanning after each sensing update. It captures the experiment-level behavior of D\*/D\* Lite, namely replanning as the map is incrementally revealed, but it is not optimized for D\* Lite's incremental priority-queue efficiency.
+
+DQN/PPO are also evaluated in this section using their saved policies and safety executor, but they are not retrained specifically for partial observability.
+
+![Online task outcome matrix](results/figures/online_task_outcome_matrix.png)
+
+### 10.1 Local Belief Update Visualization
+
+In the following figures, dark cells are still unknown to the rover. Revealed cells are inside the local sensing windows accumulated along the executed trajectory. The yellow square marks the current rover position at each snapshot.
+
+![Shadow communication online belief update](results/figures/online/shadow_comm_dastar_lite-style_belief_sequence.png)
+
+![Low battery online belief update](results/figures/online/low_battery_bad_case_dastar_lite-style_belief_sequence.png)
+
+### 10.2 Online Summary
+
+| method               | sum | count | pass_rate |
+| -------------------- | --- | ----- | --------- |
+| A* risk-aware-online | 5   | 6     | 0.8333    |
+| A* shortest-online   | 2   | 6     | 0.3333    |
+| BFS-online           | 2   | 6     | 0.3333    |
+| D* Lite-style        | 5   | 6     | 0.8333    |
+| DFS-online           | 1   | 6     | 0.1667    |
+| DQN-online           | 5   | 6     | 0.8333    |
+| Greedy-online        | 4   | 6     | 0.6667    |
+| PPO-online           | 5   | 6     | 0.8333    |
+| Random-online        | 0   | 6     | 0.0       |
+
+### 10.3 Online Raw Metrics
+
+| scenario             | method               | path_found | energy_feasible | task_success | energy   | battery_capacity | replan_count | collision_fail | known_cell_ratio |
+| -------------------- | -------------------- | ---------- | --------------- | ------------ | -------- | ---------------- | ------------ | -------------- | ---------------- |
+| baseline             | Random-online        | 0          | 0               | 0            | 90.6778  | 90.0             | 47           | 0              | 0.2652           |
+| baseline             | DFS-online           | 1          | 1               | 1            | 83.0158  | 90.0             | 36           | 0              | 0.2983           |
+| baseline             | BFS-online           | 1          | 1               | 1            | 84.8194  | 90.0             | 36           | 0              | 0.2953           |
+| baseline             | Greedy-online        | 1          | 1               | 1            | 86.3397  | 90.0             | 43           | 0              | 0.3146           |
+| baseline             | A* shortest-online   | 1          | 1               | 1            | 83.0967  | 90.0             | 36           | 0              | 0.2958           |
+| baseline             | A* risk-aware-online | 1          | 1               | 1            | 81.5559  | 90.0             | 37           | 0              | 0.2968           |
+| baseline             | D* Lite-style        | 1          | 1               | 1            | 81.5559  | 90.0             | 37           | 0              | 0.2968           |
+| baseline             | DQN-online           | 1          | 1               | 1            | 86.3397  | 90.0             | 0            | 0              | nan              |
+| baseline             | PPO-online           | 1          | 1               | 1            | 86.3397  | 90.0             | 0            | 0              | nan              |
+| crater_field         | Random-online        | 0          | 0               | 0            | 90.241   | 90.0             | 42           | 0              | 0.2528           |
+| crater_field         | DFS-online           | 1          | 0               | 0            | 90.6078  | 90.0             | 38           | 0              | 0.3017           |
+| crater_field         | BFS-online           | 1          | 0               | 0            | 91.9697  | 90.0             | 39           | 0              | 0.3017           |
+| crater_field         | Greedy-online        | 1          | 1               | 1            | 89.8084  | 90.0             | 42           | 0              | 0.3116           |
+| crater_field         | A* shortest-online   | 1          | 0               | 0            | 90.7396  | 90.0             | 38           | 0              | 0.2993           |
+| crater_field         | A* risk-aware-online | 1          | 1               | 1            | 85.0799  | 90.0             | 40           | 0              | 0.3067           |
+| crater_field         | D* Lite-style        | 1          | 1               | 1            | 85.0799  | 90.0             | 40           | 0              | 0.3067           |
+| crater_field         | DQN-online           | 1          | 1               | 1            | 88.9938  | 90.0             | 0            | 0              | nan              |
+| crater_field         | PPO-online           | 1          | 1               | 1            | 88.9938  | 90.0             | 0            | 0              | nan              |
+| slope_ridges         | Random-online        | 0          | 0               | 0            | 94.5123  | 92.0             | 52           | 0              | 0.2706           |
+| slope_ridges         | DFS-online           | 0          | 0               | 0            | 94.6579  | 92.0             | 38           | 0              | 0.2444           |
+| slope_ridges         | BFS-online           | 1          | 0               | 0            | 92.3641  | 92.0             | 40           | 0              | 0.3032           |
+| slope_ridges         | Greedy-online        | 1          | 1               | 1            | 88.0214  | 92.0             | 38           | 0              | 0.3017           |
+| slope_ridges         | A* shortest-online   | 1          | 1               | 1            | 91.0057  | 92.0             | 38           | 0              | 0.2993           |
+| slope_ridges         | A* risk-aware-online | 1          | 1               | 1            | 91.6445  | 92.0             | 39           | 0              | 0.3057           |
+| slope_ridges         | D* Lite-style        | 1          | 1               | 1            | 91.6445  | 92.0             | 39           | 0              | 0.3057           |
+| slope_ridges         | DQN-online           | 1          | 1               | 1            | 88.3049  | 92.0             | 0            | 0              | nan              |
+| slope_ridges         | PPO-online           | 1          | 1               | 1            | 88.3049  | 92.0             | 0            | 0              | nan              |
+| shadow_comm          | Random-online        | 0          | 0               | 0            | 119.0299 | 118.0            | 42           | 0              | 0.2622           |
+| shadow_comm          | DFS-online           | 0          | 0               | 0            | 120.7583 | 118.0            | 34           | 0              | 0.2706           |
+| shadow_comm          | BFS-online           | 0          | 0               | 0            | 119.5465 | 118.0            | 36           | 0              | 0.2726           |
+| shadow_comm          | Greedy-online        | 0          | 0               | 0            | 118.4793 | 118.0            | 45           | 0              | 0.2356           |
+| shadow_comm          | A* shortest-online   | 0          | 0               | 0            | 122.0507 | 118.0            | 35           | 0              | 0.2711           |
+| shadow_comm          | A* risk-aware-online | 0          | 0               | 0            | 118.1149 | 118.0            | 41           | 0              | 0.3002           |
+| shadow_comm          | D* Lite-style        | 0          | 0               | 0            | 118.1149 | 118.0            | 41           | 0              | 0.3002           |
+| shadow_comm          | DQN-online           | 1          | 1               | 1            | 117.7584 | 118.0            | 0            | 0              | nan              |
+| shadow_comm          | PPO-online           | 1          | 1               | 1            | 117.7584 | 118.0            | 0            | 0              | nan              |
+| complex_moon         | Random-online        | 0          | 0               | 0            | 109.3046 | 108.0            | 41           | 0              | 0.2296           |
+| complex_moon         | DFS-online           | 0          | 0               | 0            | 108.6132 | 108.0            | 41           | 0              | 0.3042           |
+| complex_moon         | BFS-online           | 1          | 1               | 1            | 107.054  | 108.0            | 43           | 0              | 0.3141           |
+| complex_moon         | Greedy-online        | 0          | 0               | 0            | 108.8561 | 108.0            | 37           | 0              | 0.2277           |
+| complex_moon         | A* shortest-online   | 0          | 0               | 0            | 110.3383 | 108.0            | 42           | 0              | 0.3042           |
+| complex_moon         | A* risk-aware-online | 1          | 1               | 1            | 101.8404 | 108.0            | 44           | 0              | 0.318            |
+| complex_moon         | D* Lite-style        | 1          | 1               | 1            | 101.8404 | 108.0            | 44           | 0              | 0.318            |
+| complex_moon         | DQN-online           | 0          | 1               | 0            | 107.1127 | 108.0            | 0            | 0              | nan              |
+| complex_moon         | PPO-online           | 0          | 1               | 0            | 107.1127 | 108.0            | 0            | 0              | nan              |
+| low_battery_bad_case | Random-online        | 0          | 0               | 0            | 113.2725 | 112.0            | 47           | 0              | 0.2869           |
+| low_battery_bad_case | DFS-online           | 0          | 0               | 0            | 113.7844 | 112.0            | 34           | 0              | 0.2835           |
+| low_battery_bad_case | BFS-online           | 0          | 0               | 0            | 115.1867 | 112.0            | 35           | 0              | 0.277            |
+| low_battery_bad_case | Greedy-online        | 1          | 1               | 1            | 110.795  | 112.0            | 43           | 0              | 0.317            |
+| low_battery_bad_case | A* shortest-online   | 0          | 0               | 0            | 113.7844 | 112.0            | 34           | 0              | 0.2835           |
+| low_battery_bad_case | A* risk-aware-online | 1          | 1               | 1            | 106.2901 | 112.0            | 40           | 0              | 0.3081           |
+| low_battery_bad_case | D* Lite-style        | 1          | 1               | 1            | 106.2901 | 112.0            | 40           | 0              | 0.3081           |
+| low_battery_bad_case | DQN-online           | 1          | 1               | 1            | 110.795  | 112.0            | 0            | 0              | nan              |
+| low_battery_bad_case | PPO-online           | 1          | 1               | 1            | 110.795  | 112.0            | 0            | 0              | nan              |
+
+The online results should be interpreted differently from the offline results. Online methods may fail because the local view does not reveal enough terrain structure early enough, because they choose an energy-inefficient route before discovering later hazards, or because their replanning strategy is too myopic under battery constraints.
+
+## 11. Output Files
 
 - Main runner: `scripts/run_lunar_path_experiments.py`
 - Environment module: `lunar_path/environment.py`
 - Method modules: `lunar_path/methods/`
 - Metric CSV: `experiments/results/metrics.csv`
 - RL generalization CSV: `experiments/results/generalization_metrics.csv`
+- Online local-view CSV: `experiments/results/online_metrics.csv`
 - RL training logs: `experiments/results/rl_training_logs.csv`
 - Saved RL weights: `experiments/results/models/`
 - Figure directory: `experiments/results/figures/`

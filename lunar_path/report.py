@@ -27,6 +27,8 @@ def write_report(metrics: pd.DataFrame, scenarios: List[Scenario], out_path: Pat
     best_energy = success.sort_values("energy").groupby("scenario").first().reset_index()
     generalization_path = out_path.parent / "results" / "generalization_metrics.csv"
     generalization = pd.read_csv(generalization_path) if generalization_path.exists() else pd.DataFrame()
+    online_path = out_path.parent / "results" / "online_metrics.csv"
+    online = pd.read_csv(online_path) if online_path.exists() else pd.DataFrame()
 
     lines = [
         "# Lunar Industrial Path Planning Experiment Report",
@@ -249,13 +251,56 @@ def write_report(metrics: pd.DataFrame, scenarios: List[Scenario], out_path: Pat
         ])
 
     lines.extend([
-        "## 10. Output Files",
+        "## 10. Extra Experiment: Online Local-View Replanning",
+        "",
+        "The main experiment assumes a fully known offline map. A second extra experiment relaxes this assumption: the rover starts with an unknown map and updates only a local circular sensing window around its current position. Unknown cells are treated as traversable with neutral terrain estimates until they are observed.",
+        "",
+        "This online experiment evaluates repeated local replanning methods, including Random-online, DFS-online, BFS-online, Greedy-online, A\\* shortest-online, A\\* risk-aware-online, and a **D\\* Lite-style** replanning baseline. The D\\* Lite-style method is implemented as local-map risk-aware replanning after each sensing update. It captures the experiment-level behavior of D\\*/D\\* Lite, namely replanning as the map is incrementally revealed, but it is not optimized for D\\* Lite's incremental priority-queue efficiency.",
+        "",
+        "DQN/PPO are also evaluated in this section using their saved policies and safety executor, but they are not retrained specifically for partial observability.",
+        "",
+    ])
+
+    if online.empty:
+        lines.extend([
+            "_Online local-view results have not been generated yet._",
+            "",
+        ])
+    else:
+        online_summary = online.groupby("method")["task_success"].agg(["sum", "count"]).reset_index()
+        online_summary["pass_rate"] = online_summary["sum"] / online_summary["count"]
+        lines.extend([
+            "![Online task outcome matrix](results/figures/online_task_outcome_matrix.png)",
+            "",
+            "### 10.1 Local Belief Update Visualization",
+            "",
+            "In the following figures, dark cells are still unknown to the rover. Revealed cells are inside the local sensing windows accumulated along the executed trajectory. The yellow square marks the current rover position at each snapshot.",
+            "",
+            "![Shadow communication online belief update](results/figures/online/shadow_comm_dastar_lite-style_belief_sequence.png)",
+            "",
+            "![Low battery online belief update](results/figures/online/low_battery_bad_case_dastar_lite-style_belief_sequence.png)",
+            "",
+            "### 10.2 Online Summary",
+            "",
+            df_to_markdown(online_summary.round(4)),
+            "",
+            "### 10.3 Online Raw Metrics",
+            "",
+            df_to_markdown(online[["scenario", "method", "path_found", "energy_feasible", "task_success", "energy", "battery_capacity", "replan_count", "collision_fail", "known_cell_ratio"]].round(4)),
+            "",
+            "The online results should be interpreted differently from the offline results. Online methods may fail because the local view does not reveal enough terrain structure early enough, because they choose an energy-inefficient route before discovering later hazards, or because their replanning strategy is too myopic under battery constraints.",
+            "",
+        ])
+
+    lines.extend([
+        "## 11. Output Files",
         "",
         "- Main runner: `scripts/run_lunar_path_experiments.py`",
         "- Environment module: `lunar_path/environment.py`",
         "- Method modules: `lunar_path/methods/`",
         "- Metric CSV: `experiments/results/metrics.csv`",
         "- RL generalization CSV: `experiments/results/generalization_metrics.csv`",
+        "- Online local-view CSV: `experiments/results/online_metrics.csv`",
         "- RL training logs: `experiments/results/rl_training_logs.csv`",
         "- Saved RL weights: `experiments/results/models/`",
         "- Figure directory: `experiments/results/figures/`",

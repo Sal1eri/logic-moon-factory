@@ -78,6 +78,8 @@ Current task success summary:
 
 An additional generalization experiment evaluates saved DQN/PPO models on unseen maps generated from the same scenario settings but different random seeds.
 
+The repository also includes an **online local-view replanning** experiment. In this setting, the rover does not start with the full map. It updates a circular local sensing window while moving and replans with the currently known map. This experiment includes a `D* Lite-style` replanning baseline.
+
 ## Repository Layout
 
 ```text
@@ -86,6 +88,7 @@ An additional generalization experiment evaluates saved DQN/PPO models on unseen
 │   ├── environment.py          # Lunar map generator, Gym environment, energy model
 │   ├── generalization.py       # Extra unseen-map RL generalization test
 │   ├── metrics.py              # Path and battery metrics
+│   ├── online.py               # Local-view online replanning experiment
 │   ├── report.py               # Markdown report generator
 │   ├── scenarios.py            # Scenario definitions
 │   ├── visualization.py        # Figures and plots
@@ -143,6 +146,21 @@ run_generalization_test(
 PY
 ```
 
+To run only the online local-view replanning experiment:
+
+```bash
+.venv/bin/python - <<'PY'
+from pathlib import Path
+from lunar_path.online import run_online_experiment
+
+run_online_experiment(
+    Path("experiments/results"),
+    Path("experiments/results/models"),
+    sensing_radius=5,
+)
+PY
+```
+
 ## Outputs
 
 Important generated files:
@@ -150,7 +168,9 @@ Important generated files:
 - `experiments/report.md`: full English experiment report
 - `experiments/results/metrics.csv`: main metrics
 - `experiments/results/generalization_metrics.csv`: unseen-map RL generalization metrics
+- `experiments/results/online_metrics.csv`: online local-view replanning metrics
 - `experiments/results/figures/task_outcome_matrix.png`: pass/fail outcome matrix
+- `experiments/results/figures/online_task_outcome_matrix.png`: online pass/fail outcome matrix
 - `experiments/results/figures/metrics_comparison.png`: metric comparison chart
 - `experiments/results/figures/*_paths.png`: combined path visualizations
 - `experiments/results/figures/*_path_panels.png`: per-method path visualizations
@@ -162,4 +182,3 @@ Important generated files:
 - DQN/PPO are trained and tested on the same scenario maps in the main experiment.
 - The extra generalization experiment tests saved RL policies on unseen maps, but no domain randomization training is performed.
 - The lunar environment is a simplified simulation, not a high-fidelity physics or rover dynamics simulator.
-

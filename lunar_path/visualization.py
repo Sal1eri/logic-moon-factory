@@ -125,6 +125,7 @@ def plot_paths(lunar: LunarMap, scenario: Scenario, paths: Dict[str, Optional[Li
 
 
 def plot_path_panels(lunar: LunarMap, scenario: Scenario, paths: Dict[str, Optional[List[Coord]]], out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
     methods = list(paths.keys())
     colors = {
         "Random": "#9e9e9e",
@@ -136,8 +137,11 @@ def plot_path_panels(lunar: LunarMap, scenario: Scenario, paths: Dict[str, Optio
         "DQN": "#fdd835",
         "PPO": "#ff4081",
     }
-    fig, axes = plt.subplots(2, 4, figsize=(15, 7.6), constrained_layout=True)
-    for ax, method in zip(axes.flat, methods):
+    cols = 4
+    rows = int(np.ceil(len(methods) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(15, 3.8 * rows), constrained_layout=True)
+    axes_flat = list(np.atleast_1d(axes).flat)
+    for ax, method in zip(axes_flat, methods):
         ax.imshow(base_rgb(lunar))
         path = paths.get(method)
         if path:
@@ -155,7 +159,7 @@ def plot_path_panels(lunar: LunarMap, scenario: Scenario, paths: Dict[str, Optio
         ax.set_title(f"{method} - {status}", fontsize=10, weight="bold")
         ax.set_xticks([])
         ax.set_yticks([])
-    for ax in axes.flat[len(methods):]:
+    for ax in axes_flat[len(methods):]:
         ax.axis("off")
     fig.suptitle(f"Individual Method Paths - {scenario.title}", fontsize=16, weight="bold")
     fig.savefig(out_dir / f"{scenario.name}_path_panels.png", dpi=190, bbox_inches="tight")
