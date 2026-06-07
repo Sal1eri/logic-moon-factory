@@ -20,6 +20,15 @@ METHOD_ORDER = [
     "A* risk-aware",
 ]
 
+SCENARIO_LABELS = {
+    "baseline": "baseline",
+    "complex_moon": "complex",
+    "crater_field": "crater",
+    "low_battery_bad_case": "battery_stress",
+    "shadow_comm": "shadow_comm",
+    "slope_ridges": "ridges",
+}
+
 
 def ordered_methods(methods):
     base = {method: idx for idx, method in enumerate(METHOD_ORDER)}
@@ -170,12 +179,18 @@ def plot_path_panels(lunar: LunarMap, scenario: Scenario, paths: Dict[str, Optio
             finished = path[-1] == lunar.goal
             marker = "o" if finished else "x"
             size = 70 if finished else 85
-            ax.scatter([arr[-1, 1]], [arr[-1, 0]], c=colors.get(method, "white"), s=size, marker=marker, linewidths=2.2, edgecolor="black" if finished else None)
+            end_x = float(arr[-1, 1])
+            end_y = float(arr[-1, 0])
+            if finished:
+                end_x += 0.48
+                end_y += 0.48
+            ax.scatter([end_x], [end_y], c=colors.get(method, "white"), s=size, marker=marker, linewidths=2.2, edgecolor="black" if finished else None, zorder=8)
             status = "PASS" if finished else "FAIL"
         else:
             status = "NO PATH"
-        ax.scatter([lunar.start[1]], [lunar.start[0]], c="#00e676", s=55, marker="o", edgecolor="black")
-        ax.scatter([lunar.goal[1]], [lunar.goal[0]], c="#ff1744", s=78, marker="*", edgecolor="black")
+        ax.scatter([lunar.start[1]], [lunar.start[0]], c="#00e676", s=60, marker="o", edgecolor="black", zorder=10)
+        ax.scatter([lunar.goal[1]], [lunar.goal[0]], c="white", s=170, marker="*", edgecolor="black", linewidths=1.1, zorder=11)
+        ax.scatter([lunar.goal[1]], [lunar.goal[0]], c="#ff1744", s=110, marker="*", edgecolor="black", linewidths=0.8, zorder=12)
         ax.set_title(f"{method} - {status}", fontsize=10, weight="bold")
         ax.set_xticks([])
         ax.set_yticks([])
@@ -309,6 +324,41 @@ def plot_metric_comparison(metrics: pd.DataFrame, out_dir: Path) -> None:
     ax.set_ylabel("Method")
     ax.tick_params(axis="x", rotation=25)
     fig.savefig(out_dir / "task_outcome_matrix.png", dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_offline_online_outcomes(metrics: pd.DataFrame, online: pd.DataFrame, out_dir: Path) -> None:
+    if metrics.empty or online.empty:
+        return
+    online = online[online["method"] != "D* Lite-style"].copy()
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5.2), constrained_layout=True)
+    datasets = [
+        ("Offline full-map", metrics, "method"),
+        ("Online local-view", online, "method"),
+    ]
+    for ax, (label, data, method_col) in zip(axes, datasets):
+        outcome = data.pivot(index=method_col, columns="scenario", values="task_success")
+        outcome = outcome.reindex([m for m in ordered_methods(outcome.index) if m in outcome.index])
+        outcome = outcome.rename(columns=SCENARIO_LABELS)
+        labels = outcome.map(lambda value: "PASS" if value == 1 else "FAIL")
+        sns.heatmap(
+            outcome,
+            annot=labels,
+            fmt="",
+            cmap=sns.color_palette(["#d73027", "#1a9850"], as_cmap=True),
+            vmin=0,
+            vmax=1,
+            cbar=False,
+            linewidths=0.6,
+            linecolor="white",
+            ax=ax,
+        )
+        ax.set_title(label, fontsize=11, weight="bold")
+        ax.set_xlabel("")
+        ax.set_ylabel("")
+        ax.tick_params(axis="x", rotation=25)
+        ax.tick_params(axis="y", labelsize=8)
+    fig.savefig(out_dir / "offline_online_outcome_matrix.png", dpi=190, bbox_inches="tight")
     plt.close(fig)
 
 

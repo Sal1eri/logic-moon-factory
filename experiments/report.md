@@ -2,333 +2,304 @@
 
 ## Abstract
 
-This report studies energy-constrained path planning for a lunar industrial rover operating on moon-like terrain. The simulated environment contains DEM-like elevation, crater and rock obstacles, slope risk, soft regolith, illumination variation, communication coverage, and scenario-specific battery capacity. The study first evaluates offline full-map planning, where the complete terrain map is known before planning. It then adds two extensions: reinforcement-learning transfer to unseen random maps and online local-view replanning with incremental map updates. Results show that distance-only planning is insufficient under lunar terrain constraints. A risk-aware A* planner, which explicitly optimizes energy and terrain risk, is the most reliable method in both case-level and scale-up experiments.
+This report examines energy-constrained path planning for a lunar industrial rover operating on DEM-like moon terrain. The simulator models elevation, slope, crater hazards, rocks, soft regolith, illumination, communication coverage, and finite battery capacity. The study compares uninformed search, heuristic planning, risk-aware graph search, and reinforcement learning under both offline full-map and online local-view assumptions. The results suggest that lunar rover navigation is not well represented by a pure shortest-path formulation: methods that account for terrain-dependent energy and mission risk are more likely to find feasible routes when battery margins are tight.
 
-**Keywords:** lunar rover, path planning, energy constraint, risk-aware A*, D* Lite-style replanning, reinforcement learning, local sensing
+**Keywords:** lunar rover, path planning, energy constraint, risk-aware A*, reinforcement learning, local sensing
 
 ## 1. Introduction
 
-Future lunar industrial activity will require mobile robots to transport equipment, resources, and samples across unstructured terrain. Unlike terrestrial road navigation, lunar surface mobility is affected by craters, rocks, steep slopes, soft regolith, poor illumination, communication gaps, and strict battery limits. A shortest geometric path may therefore fail even when it is collision-free.
+Future lunar industrial activity would likely require mobile robots to transport equipment, resources, and samples across unstructured terrain. Unlike terrestrial road navigation, lunar surface mobility is affected by craters, rocks, steep slopes, soft regolith, poor illumination, communication gaps, and strict battery limits. A collision-free geometric route may still be infeasible if it traverses high-slope or shadowed regions and exhausts the rover battery before reaching the target.
 
-The goal of this project is to compare classical search, heuristic planning, risk-aware planning, and reinforcement learning under these lunar constraints. The central question is whether a planner that explicitly models terrain-dependent energy and mission risk can outperform simpler path-planning baselines.
+This paper evaluates path-planning algorithms for an energy-limited lunar rover. The comparison includes simple baselines, classical graph search, risk-aware planning, local-view replanning, and reinforcement learning. The guiding question is whether explicitly modeling terrain-dependent energy and mission risk improves route feasibility compared with distance-only or locally greedy planning.
+
+To make the comparison concrete, this report uses: (i) a moon-like grid simulator with multiple terrain layers and finite-battery execution, (ii) a consistent comparison of several planning families, including A*, DQN, PPO, BFS, DFS, Greedy, and Random, (iii) offline and online experiments under shared evaluation rules, and (iv) a scale-up evaluation over multiple randomized maps.
 
 ## 2. Problem Formulation
 
-The rover moves on a `45 x 45` grid map. A task starts at a lunar base location and ends at a target industrial site. A route is successful only if the rover reaches the goal and its accumulated energy consumption does not exceed the scenario battery capacity.
+The rover operates on a `45 x 45` grid. A task is defined by a start cell `s_start`, a goal cell `s_goal`, and a scenario-specific battery capacity `B`. The action set contains eight moves: four cardinal moves and four diagonal moves. Cardinal moves have distance `1`, while diagonal moves have distance `sqrt(2)`.
 
-The main experiment assumes a **fully known offline lunar terrain map**. Before planning starts, the rover has access to all terrain layers. This is not a SLAM experiment. Online perception and partial map knowledge are studied separately in Section 8.
+Each cell `j` contains terrain attributes:
 
-Each cell stores the following map layers:
-
-| Layer | Meaning | Role in planning |
+| Symbol | Layer | Meaning |
 |---|---|---|
-| elevation | DEM-like terrain height | Used for uphill energy cost |
-| slope | local slope | Increases energy and terrain risk |
-| obstacle | rock or crater core | Impassable cell |
-| crater_risk | crater rim hazard | Adds risk cost |
-| regolith | soft soil level | Increases traction energy cost |
-| illumination | sunlight level | Low illumination increases energy cost |
-| communication | communication quality | Poor coverage increases mission risk |
+| `h_j` | elevation | DEM-like terrain height |
+| `S_j` | slope | normalized local slope |
+| `O_j` | obstacle | rock or crater core, impassable when true |
+| `C_j` | crater risk | crater-rim hazard level |
+| `R_j` | regolith | soft-soil traction penalty |
+| `L_j` | illumination | sunlight availability |
+| `Q_j` | communication | communication quality |
 
-The transition-level energy model is:
+For a transition from cell `i` to cell `j`, let `d_ij` be the move distance and let the uphill elevation gain be:
 
-```text
-transition_energy = move_distance
-                  * (1
-                     + 2.2 * slope(s')
-                     + 1.7 * regolith(s')
-                     + 1.1 * uphill_elevation_gain
-                     + 0.8 * (1 - illumination(s')))
-```
+$$\Delta h^+_{ij}=\max(0, h_j-h_i).$$
 
-The total risk-aware transition cost is:
+The transition energy is parameterized as:
 
-```text
-transition_cost = transition_energy
-                + 2.2 * crater_risk(s')
-                + 1.0 * slope(s')
-                + 1.3 * (1 - communication(s'))
-```
+$$E_{ij}=d_{ij}\left(1+\alpha_s S_j+\alpha_r R_j+\alpha_h \Delta h^+_{ij}+\alpha_l(1-L_j)\right).$$
 
-Battery use is accumulated during execution. If cumulative energy exceeds `battery_capacity`, the route immediately fails.
+The risk-aware transition cost used by A* risk-aware, online risk-aware replanning, evaluation, and as a one-step terrain term in the Greedy baseline is:
 
-## 3. Methods
+$$J_{ij}=E_{ij}+\beta_c C_j+\beta_s S_j+\beta_q(1-Q_j).$$
 
-Eight methods are compared in the offline full-map experiment:
+The coefficients used in the experiments are:
 
-| Method | Description | Main limitation |
+| Parameter | Value | Meaning |
+|---|---:|---|
+| `alpha_s` | 2.2 | slope multiplier in energy |
+| `alpha_r` | 1.7 | regolith multiplier in energy |
+| `alpha_h` | 1.1 | uphill elevation multiplier in energy |
+| `alpha_l` | 0.8 | low-illumination multiplier in energy |
+| `beta_c` | 2.2 | crater-risk cost weight |
+| `beta_s` | 1.0 | slope-risk cost weight |
+| `beta_q` | 1.3 | communication-risk cost weight |
+
+These coefficients are heuristic simulation parameters rather than physically calibrated rover constants. Since the terrain layers are normalized, the values specify the relative importance of slope, regolith, uphill motion, low illumination, crater risk, and communication loss in the synthetic lunar environment. They were selected through pilot runs to create non-trivial scenarios where simple shortest-path methods, local heuristics, reinforcement learning policies, and risk-aware planners can show distinguishable behavior under the same per-scenario battery constraint.
+
+The accumulated route energy for a path `P=(s_0,...,s_T)` is:
+
+$$E(P)=\sum_{t=0}^{T-1}E_{s_t,s_{t+1}}.$$
+
+A route succeeds only if:
+
+$$s_T=s_{goal}\quad\text{and}\quad E(P)\le B.$$
+
+If cumulative energy exceeds `B` during execution, the rover immediately fails and the recorded trajectory stops. This rule is applied to all methods, including Random and reinforcement learning.
+
+The simulator also stores an auxiliary cell cost as a compact cell-level terrain descriptor:
+
+$$M_j=1+\lambda_s S_j+\lambda_c C_j+\lambda_r R_j+\lambda_l(1-L_j)+\lambda_q(1-Q_j),$$
+
+with `lambda_s=2.8`, `lambda_c=2.2`, `lambda_r=1.7`, `lambda_l=1.6`, and `lambda_q=1.3`. Obstacle cells have infinite cost.
+
+The `lambda` coefficients are also heuristic parameters. Unlike the `alpha` and `beta` values, they define a static cell-level terrain descriptor rather than the transition energy used for battery depletion.
+
+Two map-information assumptions are evaluated. The offline setting uses a fully known DEM and terrain layers before planning. The online setting reveals a local sensing window around the rover and replans as new cells become known. This online setting models incremental map revelation, not full SLAM; localization uncertainty, sensor noise, loop closure, and map optimization are not included.
+
+## 3. Methodology
+
+The compared methods are grouped as follows:
+
+| Method | Group | Core idea |
 |---|---|---|
-| Random | Random feasible movement baseline | No global objective |
-| DFS | Depth-first graph search | Can produce long inefficient paths |
-| BFS | Breadth-first graph search | Optimizes step count, not energy |
-| Greedy | Local best-first movement | Can be locally trapped or energy-myopic |
-| A* shortest | A* with geometric path cost | Ignores terrain energy and risk |
-| A* risk-aware | A* with energy-risk transition cost and battery pruning | Requires known cost map |
-| DQN | Deep Q-network trained per scenario | Limited map awareness in low-dimensional observation |
-| PPO | Policy-gradient RL trained per scenario | Same limitation as DQN |
+| Random | Baseline | Samples feasible local moves |
+| DFS | Search | Depth-first graph traversal |
+| BFS | Search | Minimizes step count |
+| Greedy | Heuristic | Chooses the lowest one-step goal-cost score |
+| A* shortest | Search | Minimizes geometric distance |
+| A* risk-aware | Search | Minimizes `J_ij` with battery pruning |
+| DQN | RL | Learns an action-value policy |
+| PPO | RL | Learns a stochastic policy |
 
-DQN and PPO use a lightweight safety executor during rollout. Invalid actions, repeated cells, and immediately battery-depleting actions are rejected. This enforces rover safety constraints but does not give the RL agent a global planner.
+The simpler baselines mainly differ in how much future terrain information they use. Random, DFS, BFS, and A* shortest do not optimize the full energy-risk objective. Greedy uses a local one-step score, while A* risk-aware explicitly uses the terrain-aware cost.
 
-## 4. Experimental Setup
+For DQN and PPO, a single generalized model is trained for each algorithm by sampling maps from all six scenario families during training. The observation contains the rover state, goal direction, local terrain attributes, local action feasibility/cost features, distance-to-goal, and remaining battery. The reward combines terrain-aware transition cost, distance shaping, goal reward, and battery-failure penalty:
 
-Six lunar scenario families are generated. Battery capacities are selected from pilot runs to avoid trivial all-pass or all-fail outcomes.
+$$r_t=-J_{s_t,s_{t+1}}+\eta\left(\gamma\Phi(s_{t+1})-\Phi(s_t)\right)+r_{goal}\mathbf{1}_{goal}-r_{bat}\mathbf{1}_{battery},$$
 
-| scenario             | terrain                             | craters | rock_density | shadow_patches | comm_stations | battery_capacity |
-| -------------------- | ----------------------------------- | ------- | ------------ | -------------- | ------------- | ---------------- |
-| baseline             | Base Plain With Sparse Rocks        | 4       | 0.018        | 1              | 2             | 90.0             |
-| crater_field         | Dense Crater Field                  | 10      | 0.018        | 1              | 2             | 90.0             |
-| slope_ridges         | Highland Ridges And Slopes          | 6       | 0.014        | 1              | 1             | 92.0             |
-| shadow_comm          | Polar Shadow And Communication Gaps | 6       | 0.014        | 5              | 1             | 118.0            |
-| complex_moon         | Integrated Lunar Industrial Terrain | 9       | 0.022        | 4              | 2             | 108.0            |
-| low_battery_bad_case | Low Battery Bad Case                | 7       | 0.016        | 4              | 1             | 112.0            |
+where `Phi(s)=-dist(s,s_goal)`, `eta=4.0`, `gamma=0.94`, `r_goal=300`, and `r_bat=180`. Invalid actions receive an additional penalty, and the generalized DQN/PPO weights are saved under `experiments/results/models/`.
 
-The report evaluates four experimental settings:
+Fairness is maintained by using the same map, start-goal pair, battery budget, transition energy, and success/failure evaluator for all methods. RL methods do not receive a relaxed battery rule at test time.
 
-1. **Offline full-map case study:** all eight methods are tested on the six representative scenario maps.
-2. **RL unseen-map test:** saved DQN/PPO models are tested on same-family maps generated with new random seeds.
-3. **Online local-view replanning:** the rover incrementally reveals a local sensing window and replans as the map is updated.
-4. **Scale-up test:** multiple random maps per scenario family are generated to estimate pass rates statistically.
+## 4. Experiments
 
-## 5. Offline Full-Map Results
+### 4.1 Experimental Setup
 
-**Figure 1. Pass/fail outcome matrix for the offline full-map experiment.**
+The experiments use six `45 x 45` lunar scenario families with eight-neighbor motion and finite battery execution. Battery budgets are scenario-specific pilot-run settings chosen to avoid trivial all-pass or all-fail outcomes; they should be read relative to each terrain family rather than as a global ranking of battery availability.
 
-![Task outcome matrix](results/figures/task_outcome_matrix.png)
+| family             | main stress                          | B   |
+| ------------------ | ------------------------------------ | --- |
+| Base plain         | Sparse rocks                         | 90  |
+| Crater field       | Dense craters                        | 90  |
+| Highland ridges    | Slope and elevation                  | 92  |
+| Polar shadow       | Low light and weak communication     | 118 |
+| Integrated terrain | Mixed craters, rocks, slopes, shadow | 108 |
+| Battery stress     | Tight energy margin                  | 112 |
 
-**Figure 2. Compact cross-method metric matrix. Values are normalized within each scenario; lower is better.**
+Figure A shows one representative environment. It includes the rendered terrain, elevation, slope/crater risk, illumination, and communication layers; the remaining environment maps are kept in the Appendix.
 
-![Metrics comparison](results/figures/metrics_comparison.png)
+**Figure A. Representative lunar environment layers for `complex_moon`.**
 
-**Figure 3. Normalized metric heatmap. Lower values are better.**
+![Integrated Lunar Industrial Terrain environment](results/figures/complex_moon_environment.png)
 
-![Metrics heatmap](results/figures/metrics_heatmap.png)
+### 4.2 Case-Level Offline and Online Results
 
-**Figure 4. Battery energy margin by method and scenario.**
+The case-level results are used as qualitative diagnostics under fixed maps, start-goal pairs, per-scenario battery budgets, and success criteria. Broader quantitative evidence is reported in the scale-up experiment.
 
-![Battery energy margin](results/figures/battery_energy_margin.png)
+Figure 1 first shows the offline full-map paths on the Integrated Lunar Industrial Terrain scenario. This view makes the route differences between shortest-path, risk-aware, search-based, and learning-based methods easier to inspect before introducing partial map information.
 
-### 5.1 Offline Summary
-
-| method        | sum | count | pass_rate |
-| ------------- | --- | ----- | --------- |
-| Random        | 0   | 6     | 0.0       |
-| DFS           | 1   | 6     | 0.1667    |
-| A* shortest   | 3   | 6     | 0.5       |
-| Greedy        | 4   | 6     | 0.6667    |
-| BFS           | 5   | 6     | 0.8333    |
-| DQN           | 5   | 6     | 0.8333    |
-| PPO           | 5   | 6     | 0.8333    |
-| A* risk-aware | 6   | 6     | 1.0       |
-
-### 5.2 Lowest-Cost and Lowest-Energy Routes
-
-**Lowest total cost by scenario:**
-
-| scenario             | method        | total_cost | path_length | energy   | terrain_risk |
-| -------------------- | ------------- | ---------- | ----------- | -------- | ------------ |
-| baseline             | A* risk-aware | 122.078    | 54.0122     | 78.5553  | 5.3423       |
-| complex_moon         | A* risk-aware | 173.5608   | 74.4558     | 100.0644 | 8.3341       |
-| crater_field         | A* risk-aware | 162.2758   | 52.2548     | 82.2451  | 17.2395      |
-| low_battery_bad_case | A* risk-aware | 141.6346   | 57.7696     | 78.7031  | 7.0827       |
-| shadow_comm          | A* risk-aware | 158.9868   | 62.9411     | 92.6017  | 9.3709       |
-| slope_ridges         | A* risk-aware | 132.1378   | 56.8406     | 85.9057  | 6.2054       |
-
-**Lowest energy by scenario:**
-
-| scenario             | method        | energy   | total_cost | path_length | terrain_risk |
-| -------------------- | ------------- | -------- | ---------- | ----------- | ------------ |
-| baseline             | A* risk-aware | 78.5553  | 122.078    | 54.0122     | 5.3423       |
-| complex_moon         | A* risk-aware | 100.0644 | 173.5608   | 74.4558     | 8.3341       |
-| crater_field         | A* risk-aware | 82.2451  | 162.2758   | 52.2548     | 17.2395      |
-| low_battery_bad_case | A* risk-aware | 78.7031  | 141.6346   | 57.7696     | 7.0827       |
-| shadow_comm          | A* risk-aware | 92.6017  | 158.9868   | 62.9411     | 9.3709       |
-| slope_ridges         | A* risk-aware | 85.9057  | 132.1378   | 56.8406     | 6.2054       |
-
-### 5.3 Representative Path Visualizations
-
-The following figures show representative combined and per-method path visualizations. Overlapping paths in combined figures are slightly offset for readability.
-
-**Figure. Combined paths for `baseline`.**
-
-![Base Plain With Sparse Rocks paths](results/figures/baseline_paths.png)
-
-**Figure. Individual method paths for `baseline`. Failed trajectories are marked with an `X`.**
-
-![Base Plain With Sparse Rocks individual method paths](results/figures/baseline_path_panels.png)
-
-**Figure. Combined paths for `crater_field`.**
-
-![Dense Crater Field paths](results/figures/crater_field_paths.png)
-
-**Figure. Individual method paths for `crater_field`. Failed trajectories are marked with an `X`.**
-
-![Dense Crater Field individual method paths](results/figures/crater_field_path_panels.png)
-
-**Figure. Combined paths for `slope_ridges`.**
-
-![Highland Ridges And Slopes paths](results/figures/slope_ridges_paths.png)
-
-**Figure. Individual method paths for `slope_ridges`. Failed trajectories are marked with an `X`.**
-
-![Highland Ridges And Slopes individual method paths](results/figures/slope_ridges_path_panels.png)
-
-**Figure. Combined paths for `shadow_comm`.**
-
-![Polar Shadow And Communication Gaps paths](results/figures/shadow_comm_paths.png)
-
-**Figure. Individual method paths for `shadow_comm`. Failed trajectories are marked with an `X`.**
-
-![Polar Shadow And Communication Gaps individual method paths](results/figures/shadow_comm_path_panels.png)
-
-**Figure. Combined paths for `complex_moon`.**
-
-![Integrated Lunar Industrial Terrain paths](results/figures/complex_moon_paths.png)
-
-**Figure. Individual method paths for `complex_moon`. Failed trajectories are marked with an `X`.**
+**Figure 1. Offline Integrated Lunar Industrial Terrain path examples. Failed trajectories are marked with an `X`.**
 
 ![Integrated Lunar Industrial Terrain individual method paths](results/figures/complex_moon_path_panels.png)
 
-**Figure. Combined paths for `low_battery_bad_case`.**
+The online setting then relaxes the full-map assumption. The rover starts with an unknown map and reveals only a circular local sensing window around its current position. Unknown cells are treated as traversable with neutral terrain estimates until observed. Methods replan using the currently known map. This is online replanning under incremental map revelation rather than SLAM, because rover localization is assumed known and no sensor-noise or map-optimization model is included.
 
-![Low Battery Bad Case paths](results/figures/low_battery_bad_case_paths.png)
+Figures 2a and 2b show two online local-view rollouts on the same Integrated Lunar Industrial Terrain scenario. Greedy online search fails after exhausting the battery while still far from the goal, whereas risk-aware online planning reaches the goal with remaining energy.
 
-**Figure. Individual method paths for `low_battery_bad_case`. Failed trajectories are marked with an `X`.**
+Additional path visualizations and battery margins are moved to the Appendix to keep the main text focused.
 
-![Low Battery Bad Case individual method paths](results/figures/low_battery_bad_case_path_panels.png)
+**Figure 2a. Online local-view failure case on Integrated Lunar Industrial Terrain using Greedy online search. Dark cells are unknown, revealed cells are inside accumulated sensing windows, and the yellow square marks the current rover position.**
 
-## 6. Reinforcement Learning Training and Unseen-Map Test
+![Integrated Lunar Industrial Terrain Greedy online local-view failure](results/figures/online/complex_moon_greedy_local_view_sequence.png)
 
-DQN and PPO are trained on their corresponding scenario maps. To test whether these policies generalize beyond the training map, the saved models are evaluated on unseen maps generated from the same scenario settings but different random seeds. No additional training is performed for this test.
+**Figure 2b. Online local-view success case on the same Integrated Lunar Industrial Terrain scenario using risk-aware online planning.**
 
-**Figure 5. DQN/PPO training reward curves.**
+![Integrated Lunar Industrial Terrain risk-aware online local-view success](results/figures/online/complex_moon_astar_risk-aware_local_view_sequence.png)
 
-![RL training reward](results/figures/rl_training_reward.png)
+Figure 3 summarizes the pass/fail outcome across all representative case-level maps under both information assumptions.
 
-**Figure 6. DQN/PPO unseen-map pass/fail matrix.**
+**Figure 3. Offline full-map and online local-view pass/fail outcomes.**
 
-![RL generalization matrix](results/figures/rl_generalization_matrix.png)
+![Offline and online outcome matrix](results/figures/offline_online_outcome_matrix.png)
 
-### 6.1 Unseen-Map Summary
+### 4.3 Scale-Up Experiment
 
-| method         | sum | count | pass_rate |
-| -------------- | --- | ----- | --------- |
-| DQN unseen-map | 3   | 6     | 0.5       |
-| PPO unseen-map | 3   | 6     | 0.5       |
+The case-level experiments are extended by generating multiple random maps for each scenario family. This provides a broader estimate of performance than a small number of representative maps and also covers the cross-map behavior of the saved RL policies. The scale-up experiment evaluates the same eight methods used in the main comparison: Random, DFS, BFS, Greedy, A* shortest, A* risk-aware, DQN, and PPO.
 
-The unseen-map test shows whether the learned policies transfer to new maps. In this implementation, RL policies have limited map-structural input, so their transfer performance should be interpreted cautiously.
+This scale-up experiment uses `6` scenario families and `30` random maps per scenario family for each setting. Across the offline and online settings, this corresponds to `360` generated map-setting pairs and `2880` method evaluations.
 
-## 7. Online Local-View Replanning
+Tables 1 and 2 report pass rates for each scenario family, with the final column giving the average over all six families. Table 3 adds the corresponding overall mean energy consumption and path length.
 
-The offline assumption is relaxed in this experiment. The rover starts with an unknown map and reveals only a circular local sensing window around its current position. Unknown cells are treated as traversable with neutral terrain estimates until observed. Methods replan using the currently known map. A D* Lite-style baseline is implemented as repeated risk-aware replanning after each sensing update; it captures the behavioral idea of D*/D* Lite without implementing incremental priority-queue optimization.
+For DQN and PPO, the online evaluation uses the same compact local observation as training; because this observation already contains the current cell, neighboring action costs, goal direction, and battery level, incremental map revelation does not remove additional long-range map information from these policies. The offline-online contrast is therefore most visible for explicit planners that rely on a multi-step map search.
 
-**Figure 7. Online local-view pass/fail matrix.**
+**Table 1. Offline full-map scale-up pass rate by method and scenario family.**
 
-![Online task outcome matrix](results/figures/online_task_outcome_matrix.png)
+| method        | baseline | complex | crater | battery_stress | shadow_comm | ridges | overall |
+| ------------- | -------- | ------- | ------ | -------------- | ----------- | ------ | ------- |
+| Random        | 0.0      | 0.0     | 0.0    | 0.0            | 0.0         | 0.0    | 0.0     |
+| PPO           | 0.4      | 0.33    | 0.17   | 0.2            | 0.43        | 0.17   | 0.28    |
+| DQN           | 0.4      | 0.2     | 0.13   | 0.37           | 0.67        | 0.27   | 0.34    |
+| BFS           | 0.3      | 0.33    | 0.1    | 0.43           | 0.67        | 0.23   | 0.34    |
+| A* shortest   | 0.33     | 0.3     | 0.13   | 0.4            | 0.63        | 0.3    | 0.35    |
+| DFS           | 0.37     | 0.27    | 0.17   | 0.37           | 0.67        | 0.27   | 0.35    |
+| Greedy        | 0.43     | 0.27    | 0.17   | 0.57           | 0.77        | 0.4    | 0.43    |
+| A* risk-aware | 0.83     | 0.93    | 0.53   | 0.93           | 1.0         | 0.87   | 0.85    |
 
-### 7.1 Local Belief Update Examples
+**Table 2. Online local-view scale-up pass rate by method and scenario family.**
 
-Dark cells are unknown. Revealed cells are inside accumulated local sensing windows. The yellow square marks the current rover position. Battery use is shown as a percentage of the scenario-specific budget.
+| method        | baseline | complex | crater | battery_stress | shadow_comm | ridges | overall |
+| ------------- | -------- | ------- | ------ | -------------- | ----------- | ------ | ------- |
+| Random        | 0.0      | 0.0     | 0.0    | 0.0            | 0.07        | 0.03   | 0.02    |
+| PPO           | 0.4      | 0.33    | 0.17   | 0.2            | 0.43        | 0.17   | 0.28    |
+| BFS           | 0.27     | 0.17    | 0.1    | 0.33           | 0.6         | 0.27   | 0.29    |
+| DFS           | 0.37     | 0.23    | 0.13   | 0.37           | 0.6         | 0.27   | 0.33    |
+| DQN           | 0.4      | 0.2     | 0.13   | 0.37           | 0.67        | 0.27   | 0.34    |
+| A* shortest   | 0.37     | 0.3     | 0.13   | 0.37           | 0.67        | 0.27   | 0.35    |
+| Greedy        | 0.37     | 0.27    | 0.17   | 0.5            | 0.73        | 0.4    | 0.41    |
+| A* risk-aware | 0.4      | 0.47    | 0.23   | 0.67           | 0.87        | 0.47   | 0.52    |
 
-**Figure 8. Failure example: D* Lite-style replanning in `shadow_comm`. The rover nearly reaches the target but exceeds the battery budget.**
+**Table 3. Overall scale-up pass rate, mean energy, and mean path length.**
 
-![Shadow communication online belief update](results/figures/online/shadow_comm_dastar_lite-style_belief_sequence.png)
+| method        | offline_pass | offline_energy | offline_length | online_pass | online_energy | online_length |
+| ------------- | ------------ | -------------- | -------------- | ----------- | ------------- | ------------- |
+| Random        | 0.0          | 103.18         | 58.27          | 0.02        | 103.08        | 48.9          |
+| PPO           | 0.28         | 97.67          | 53.36          | 0.28        | 97.67         | 53.36         |
+| BFS           | 0.34         | 99.06          | 47.2           | 0.29        | 99.64         | 46.99         |
+| DFS           | 0.35         | 99.17          | 46.71          | 0.33        | 99.36         | 46.46         |
+| DQN           | 0.34         | 96.35          | 52.29          | 0.34        | 96.35         | 52.29         |
+| A* shortest   | 0.35         | 99.11          | 47.19          | 0.35        | 99.17         | 46.78         |
+| Greedy        | 0.43         | 97.12          | 50.37          | 0.41        | 97.62         | 50.37         |
+| A* risk-aware | 0.85         | 88.26          | 58.45          | 0.52        | 79.43         | 42.74         |
 
-**Figure 9. Success example: D* Lite-style replanning in `low_battery_bad_case`. The rover reaches the target within the battery budget.**
+These results indicate that explicitly incorporating terrain risk into the planning objective provides the most robust navigation behavior across diverse lunar terrain conditions. The online results further show that partial map availability remains challenging because decisions must be made before the full terrain is revealed.
 
-![Low battery online belief update](results/figures/online/low_battery_bad_case_dastar_lite-style_belief_sequence.png)
+## 5. Discussion and Conclusion
 
-### 7.2 Online Summary
+The results show that shortest-path planning is often inadequate for lunar terrain because route feasibility depends on terrain-dependent energy consumption and battery capacity, not only geometric distance. Across the scale-up experiment, risk-aware A* obtains the strongest offline success rate by explicitly optimizing the same terrain-aware factors used in evaluation. Its paths are often longer, but they avoid costly or risky terrain and therefore preserve more feasible battery margins.
 
-| method               | sum | count | pass_rate |
-| -------------------- | --- | ----- | --------- |
-| Random-online        | 0   | 6     | 0.0       |
-| DFS-online           | 1   | 6     | 0.1667    |
-| A* shortest-online   | 2   | 6     | 0.3333    |
-| BFS-online           | 2   | 6     | 0.3333    |
-| Greedy-online        | 4   | 6     | 0.6667    |
-| A* risk-aware-online | 5   | 6     | 0.8333    |
-| D* Lite-style        | 5   | 6     | 0.8333    |
-| DQN-online           | 5   | 6     | 0.8333    |
-| PPO-online           | 5   | 6     | 0.8333    |
+Partial map availability makes the online setting substantially harder. The rover must commit to early actions before the full terrain is revealed, so locally reasonable decisions can later become energy-infeasible. The representative online case illustrates this failure mode: greedy replanning exhausts the battery before reaching the goal, while risk-aware replanning preserves enough margin to finish. The RL agents are competitive in some scenarios, but their compact state representation limits spatial reasoning; stronger RL baselines would likely require local terrain-map observations and convolutional policies.
 
-## 8. Scale-Up Experiment
+Overall, this study supports modeling lunar rover navigation as an energy-constrained, risk-aware planning problem. The simulator is simplified and the online setting is not a full SLAM formulation, but the experiments show that terrain risk, battery limits, and map availability can change which planning methods are feasible. These results indicate that explicitly incorporating terrain risk into the planning objective provides the most robust navigation behavior across diverse lunar terrain conditions.
 
-The case-level experiments are extended by generating multiple random maps for each scenario family. This provides a more robust estimate of performance than a small number of hand-picked maps.
+## Appendix A. Supplementary Environment Maps
 
-This scale-up experiment uses `6` scenario families and `8` random maps per scenario family for each setting. Across the offline and online settings, this corresponds to `96` generated map-setting pairs and `624` method evaluations.
+This appendix contains the remaining representative environment maps. The main text keeps one environment example to reduce visual redundancy.
 
-**Figure 10. Scale-up pass rates for the offline full-map setting.**
+**Figure A1. Environment layers for Base Plain With Sparse Rocks.**
 
-![Offline scale-up pass rate](results/figures/scale_up_offline_full_map_pass_rate.png)
+![Base Plain With Sparse Rocks environment](results/figures/baseline_environment.png)
 
-**Figure 11. Scale-up pass rates for the online local-view setting.**
+**Figure A2. Environment layers for Dense Crater Field.**
 
-![Online scale-up pass rate](results/figures/scale_up_online_local_view_pass_rate.png)
+![Dense Crater Field environment](results/figures/crater_field_environment.png)
 
-**Figure 12. Overall scale-up pass rate by method.**
+**Figure A3. Environment layers for Highland Ridges And Slopes.**
 
-![Overall scale-up pass rate](results/figures/scale_up_overall_pass_rate.png)
+![Highland Ridges And Slopes environment](results/figures/slope_ridges_environment.png)
 
-### 8.1 Scale-Up Aggregate Metrics
+**Figure A4. Environment layers for Polar Shadow And Communication Gaps.**
 
-| setting           | method               | pass_rate | mean_energy | mean_path_length |
-| ----------------- | -------------------- | --------- | ----------- | ---------------- |
-| offline_full_map  | A* shortest          | 0.3333    | 98.9549     | 47.3666          |
-| offline_full_map  | BFS                  | 0.3958    | 98.6664     | 47.4577          |
-| offline_full_map  | Greedy               | 0.4167    | 97.7807     | 51.0186          |
-| offline_full_map  | DQN                  | 0.4792    | 95.9512     | 51.5549          |
-| offline_full_map  | PPO                  | 0.4792    | 95.9512     | 51.5549          |
-| offline_full_map  | A* risk-aware        | 0.8542    | 90.0591     | 59.3775          |
-| online_local_view | BFS-online           | 0.2917    | 99.1878     | 46.684           |
-| online_local_view | A* shortest-online   | 0.3125    | 98.9786     | 46.4434          |
-| online_local_view | Greedy-online        | 0.3542    | 98.1591     | 51.5326          |
-| online_local_view | DQN-online           | 0.4792    | 95.9512     | 51.5549          |
-| online_local_view | PPO-online           | 0.4792    | 95.9512     | 51.5549          |
-| online_local_view | A* risk-aware-online | 0.5       | 77.4264     | 41.0924          |
-| online_local_view | D* Lite-style        | 0.5       | 77.4264     | 41.0924          |
+![Polar Shadow And Communication Gaps environment](results/figures/shadow_comm_environment.png)
 
-### 8.2 Offline Pass Rate by Scenario Family
+**Figure A5. Environment layers for Battery Stress Case.**
 
-| method        | baseline | complex_moon | crater_field | low_battery_bad_case | shadow_comm | slope_ridges |
-| ------------- | -------- | ------------ | ------------ | -------------------- | ----------- | ------------ |
-| A* shortest   | 0.5      | 0.25         | 0.125        | 0.5                  | 0.625       | 0.0          |
-| BFS           | 0.5      | 0.375        | 0.125        | 0.625                | 0.625       | 0.125        |
-| Greedy        | 0.625    | 0.125        | 0.125        | 0.625                | 0.75        | 0.25         |
-| DQN           | 0.625    | 0.375        | 0.125        | 0.75                 | 0.75        | 0.25         |
-| PPO           | 0.625    | 0.375        | 0.125        | 0.75                 | 0.75        | 0.25         |
-| A* risk-aware | 1.0      | 1.0          | 0.25         | 1.0                  | 1.0         | 0.875        |
+![Battery Stress Case environment](results/figures/low_battery_bad_case_environment.png)
 
-### 8.3 Online Pass Rate by Scenario Family
+## Appendix B. Supplementary Path Visualizations
 
-| method               | baseline | complex_moon | crater_field | low_battery_bad_case | shadow_comm | slope_ridges |
-| -------------------- | -------- | ------------ | ------------ | -------------------- | ----------- | ------------ |
-| BFS-online           | 0.5      | 0.125        | 0.125        | 0.375                | 0.5         | 0.125        |
-| A* shortest-online   | 0.5      | 0.25         | 0.125        | 0.375                | 0.625       | 0.0          |
-| Greedy-online        | 0.375    | 0.125        | 0.125        | 0.5                  | 0.75        | 0.25         |
-| DQN-online           | 0.625    | 0.375        | 0.125        | 0.75                 | 0.75        | 0.25         |
-| PPO-online           | 0.625    | 0.375        | 0.125        | 0.75                 | 0.75        | 0.25         |
-| A* risk-aware-online | 0.5      | 0.5          | 0.125        | 0.875                | 0.875       | 0.125        |
-| D* Lite-style        | 0.5      | 0.5          | 0.125        | 0.875                | 0.875       | 0.125        |
+The path plots below show combined and per-method trajectories for each representative scenario. Overlapping routes in combined figures are slightly offset for readability.
 
-## 9. Discussion
+### Appendix B.1. Base Plain With Sparse Rocks
 
-The experiments support three main observations. First, shortest-path planning is not sufficient for lunar terrain because energy consumption depends strongly on slope, regolith, uphill movement, and illumination. Second, explicit cost modeling is valuable: A* risk-aware performs strongly because its planning objective matches the evaluation objective. Third, online local-view planning is harder than offline planning because early choices are made with incomplete terrain knowledge, which can lead to energy-inefficient routes before hazards are fully revealed.
+**Figure B1a. Combined paths for Base Plain With Sparse Rocks.**
 
-The reinforcement-learning results are mixed. DQN and PPO can find feasible routes in several settings, but their low-dimensional observation does not include a local map patch. As a result, the learned policies do not consistently outperform model-based risk-aware planning. A stronger RL formulation would likely require multi-channel local map observations and a CNN-based policy.
+![Base Plain With Sparse Rocks paths](results/figures/baseline_paths.png)
 
-## 10. Limitations
+**Figure B1b. Individual method paths for Base Plain With Sparse Rocks. Failed trajectories are marked with an `X`.**
 
-- The lunar terrain is a simplified grid simulation rather than a high-fidelity rover dynamics simulator.
-- The offline experiment assumes a fully known map.
-- The online experiment uses a simplified local sensing model and neutral assumptions for unknown cells.
-- D* Lite-style replanning captures repeated replanning behavior but not optimized incremental D* Lite data structures.
-- DQN/PPO use compact state features rather than image-like local terrain patches.
+![Base Plain With Sparse Rocks individual method paths](results/figures/baseline_path_panels.png)
 
-## 11. Conclusion
+### Appendix B.2. Dense Crater Field
 
-This study shows that lunar industrial rover navigation should be treated as an energy-constrained and risk-aware planning problem rather than a shortest-path problem. Across representative cases and random-seed scale-up tests, risk-aware A* is the most reliable method because it directly optimizes terrain-dependent energy and mission risk while respecting battery capacity. Online local-view replanning reduces performance relative to full-map planning, but D* Lite-style and risk-aware replanning remain competitive when the map is incrementally revealed.
+**Figure B2a. Combined paths for Dense Crater Field.**
 
-## Output Files
+![Dense Crater Field paths](results/figures/crater_field_paths.png)
+
+**Figure B2b. Individual method paths for Dense Crater Field. Failed trajectories are marked with an `X`.**
+
+![Dense Crater Field individual method paths](results/figures/crater_field_path_panels.png)
+
+### Appendix B.3. Highland Ridges And Slopes
+
+**Figure B3a. Combined paths for Highland Ridges And Slopes.**
+
+![Highland Ridges And Slopes paths](results/figures/slope_ridges_paths.png)
+
+**Figure B3b. Individual method paths for Highland Ridges And Slopes. Failed trajectories are marked with an `X`.**
+
+![Highland Ridges And Slopes individual method paths](results/figures/slope_ridges_path_panels.png)
+
+### Appendix B.4. Polar Shadow And Communication Gaps
+
+**Figure B4a. Combined paths for Polar Shadow And Communication Gaps.**
+
+![Polar Shadow And Communication Gaps paths](results/figures/shadow_comm_paths.png)
+
+**Figure B4b. Individual method paths for Polar Shadow And Communication Gaps. Failed trajectories are marked with an `X`.**
+
+![Polar Shadow And Communication Gaps individual method paths](results/figures/shadow_comm_path_panels.png)
+
+### Appendix B.5. Integrated Lunar Industrial Terrain
+
+**Figure B5a. Combined paths for Integrated Lunar Industrial Terrain.**
+
+![Integrated Lunar Industrial Terrain paths](results/figures/complex_moon_paths.png)
+
+**Figure B5b. Individual method paths for Integrated Lunar Industrial Terrain. Failed trajectories are marked with an `X`.**
+
+![Integrated Lunar Industrial Terrain individual method paths](results/figures/complex_moon_path_panels.png)
+
+### Appendix B.6. Battery Stress Case
+
+**Figure B6a. Combined paths for Battery Stress Case.**
+
+![Battery Stress Case paths](results/figures/low_battery_bad_case_paths.png)
+
+**Figure B6b. Individual method paths for Battery Stress Case. Failed trajectories are marked with an `X`.**
+
+![Battery Stress Case individual method paths](results/figures/low_battery_bad_case_path_panels.png)
+
+## Appendix C. Output Files
 
 - Main report: `experiments/report.md`
 - Main metrics: `experiments/results/metrics.csv`

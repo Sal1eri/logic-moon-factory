@@ -1,6 +1,6 @@
 import math
-from dataclasses import dataclass
-from typing import Tuple
+from dataclasses import dataclass, replace
+from typing import Sequence, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -212,6 +212,39 @@ def step_env(lunar: LunarMap, state: Coord, action_idx: int):
     return nxt, reward, done
 
 
+def observation_for_state(lunar: LunarMap, pos: Coord, energy_used: float) -> np.ndarray:
+    y, x = pos
+    gy, gx = lunar.goal
+    n = lunar.size - 1
+    global_features = [
+        2 * y / n - 1,
+        2 * x / n - 1,
+        2 * gy / n - 1,
+        2 * gx / n - 1,
+        np.clip((gy - y) / lunar.size, -1, 1),
+        np.clip((gx - x) / lunar.size, -1, 1),
+        2 * lunar.slope[y, x] - 1,
+        2 * lunar.crater_risk[y, x] - 1,
+        2 * lunar.regolith[y, x] - 1,
+        2 * lunar.illumination[y, x] - 1,
+        2 * lunar.communication[y, x] - 1,
+        np.clip(lunar.cost[y, x] / 8.0, 0, 1) * 2 - 1,
+        np.clip(heuristic(pos, lunar.goal) / (lunar.size * np.sqrt(2)), 0, 1) * 2 - 1,
+        np.clip(1.0 - energy_used / lunar.battery_capacity, 0, 1) * 2 - 1,
+    ]
+    local_features = []
+    for dy, dx in ACTIONS:
+        nxt = (y + dy, x + dx)
+        valid = 0 <= nxt[0] < lunar.size and 0 <= nxt[1] < lunar.size and not lunar.obstacle[nxt]
+        if valid:
+            move = math.sqrt(2) if dy and dx else 1.0
+            step_cost = transition_cost(lunar, pos, nxt, move)
+            local_features.extend([1.0, np.clip(step_cost / 12.0, 0, 1) * 2 - 1])
+        else:
+            local_features.extend([-1.0, 1.0])
+    return np.array(global_features + local_features, dtype=np.float32)
+
+
 class LunarPathEnv(gym.Env):
     metadata = {"render_modes": []}
 
@@ -220,32 +253,14 @@ class LunarPathEnv(gym.Env):
         self.lunar = lunar
         self.rng = np.random.default_rng(seed)
         self.action_space = spaces.Discrete(len(ACTIONS))
-        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(14,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(30,), dtype=np.float32)
         self.max_steps = lunar.size * lunar.size // 2
         self.pos = lunar.start
         self.steps = 0
         self.energy_used = 0.0
 
     def _obs(self) -> np.ndarray:
-        y, x = self.pos
-        gy, gx = self.lunar.goal
-        n = self.lunar.size - 1
-        return np.array([
-            2 * y / n - 1,
-            2 * x / n - 1,
-            2 * gy / n - 1,
-            2 * gx / n - 1,
-            np.clip((gy - y) / self.lunar.size, -1, 1),
-            np.clip((gx - x) / self.lunar.size, -1, 1),
-            2 * self.lunar.slope[y, x] - 1,
-            2 * self.lunar.crater_risk[y, x] - 1,
-            2 * self.lunar.regolith[y, x] - 1,
-            2 * self.lunar.illumination[y, x] - 1,
-            2 * self.lunar.communication[y, x] - 1,
-            np.clip(self.lunar.cost[y, x] / 8.0, 0, 1) * 2 - 1,
-            np.clip(heuristic(self.pos, self.lunar.goal) / (self.lunar.size * np.sqrt(2)), 0, 1) * 2 - 1,
-            np.clip(1.0 - self.energy_used / self.lunar.battery_capacity, 0, 1) * 2 - 1,
-        ], dtype=np.float32)
+        return observation_for_state(self.lunar, self.pos, self.energy_used)
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
@@ -280,3 +295,28 @@ class LunarPathEnv(gym.Env):
             reward += 120.0
         terminated = done or battery_failed
         return self._obs(), float(reward), terminated, truncated, {"battery_failed": battery_failed, "energy_used": self.energy_used}
+
+
+class RandomizedLunarPathEnv(gym.Env):
+    metadata = {"render_modes": []}
+
+    def __init__(self, scenarios: Sequence[Scenario], seed: int = 0):
+        super().__init__()
+        self.scenarios = list(scenarios)
+        self.rng = np.random.default_rng(seed)
+        self.action_space = spaces.Discrete(len(ACTIONS))
+        self.observation_space = spaces.Box(low=-1.0, high=1.0, shape=(30,), dtype=np.float32)
+        self.inner = None
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        if seed is not None:
+            self.rng = np.random.default_rng(seed)
+        base = self.scenarios[int(self.rng.integers(0, len(self.scenarios)))]
+        sampled_seed = int(base.seed + self.rng.integers(10000, 1000000))
+        scenario = replace(base, seed=sampled_seed)
+        self.inner = LunarPathEnv(generate_lunar_map(scenario), seed=sampled_seed)
+        return self.inner.reset()
+
+    def step(self, action):
+        return self.inner.step(action)

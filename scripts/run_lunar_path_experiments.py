@@ -13,13 +13,15 @@ from lunar_path.environment import execute_path_with_battery, generate_lunar_map
 from lunar_path.metrics import path_metrics
 from lunar_path.methods.astar import astar
 from lunar_path.methods.bfs import breadth_first_search
-from lunar_path.methods.deep_rl import deep_rl_policy_path, train_deep_rl
+from stable_baselines3 import DQN, PPO
+
+from lunar_path.methods.deep_rl import deep_rl_policy_path
 from lunar_path.methods.dfs import depth_first_search
 from lunar_path.methods.greedy import greedy_best_first
 from lunar_path.methods.random_planner import random_walk
 from lunar_path.report import write_report
 from lunar_path.scenarios import default_scenarios
-from lunar_path.visualization import plot_environment, plot_metric_comparison, plot_path_panels, plot_paths, plot_training
+from lunar_path.visualization import plot_environment, plot_metric_comparison, plot_path_panels, plot_paths
 
 
 def main() -> None:
@@ -35,7 +37,10 @@ def main() -> None:
 
     scenarios = default_scenarios()
     all_metrics = []
-    all_logs = []
+    rl_models = {
+        "DQN": DQN.load(model_dir / "global_dqn_randomized.zip", device=device),
+        "PPO": PPO.load(model_dir / "global_ppo_randomized.zip", device=device),
+    }
 
     for scenario in scenarios:
         print(f"Running scenario: {scenario.name}", flush=True)
@@ -52,12 +57,7 @@ def main() -> None:
         }
         paths = {method: execute_path_with_battery(lunar, path) for method, path in paths.items()}
 
-        for method_name, seed_offset in [("DQN", 1000), ("PPO", 2000)]:
-            print(f"  training {method_name} for {scenario.rl_timesteps} timesteps", flush=True)
-            model, logs = train_deep_rl(lunar, method_name, scenario.rl_timesteps, scenario.seed + seed_offset, device)
-            model.save(model_dir / f"{scenario.name}_{method_name.lower()}")
-            logs.insert(0, "scenario", scenario.name)
-            all_logs.append(logs)
+        for method_name, model in rl_models.items():
             paths[method_name] = execute_path_with_battery(lunar, deep_rl_policy_path(lunar, model))
 
         plot_paths(lunar, scenario, paths, fig_dir)
@@ -66,11 +66,8 @@ def main() -> None:
             all_metrics.append(path_metrics(lunar, path, method, scenario))
 
     metrics = pd.DataFrame(all_metrics)
-    logs = pd.concat(all_logs, ignore_index=True) if all_logs else pd.DataFrame()
     metrics.to_csv(out_dir / "metrics.csv", index=False)
-    logs.to_csv(out_dir / "rl_training_logs.csv", index=False)
     plot_metric_comparison(metrics, fig_dir)
-    plot_training(logs, fig_dir)
     write_report(metrics, scenarios, root / "report.md")
 
     print("Done.", flush=True)

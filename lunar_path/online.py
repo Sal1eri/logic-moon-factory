@@ -13,18 +13,17 @@ from lunar_path.environment import (
     Coord,
     LunarMap,
     Scenario,
-    execute_path_with_battery,
     generate_lunar_map,
     heuristic,
+    observation_for_state,
     transition_energy,
 )
 from lunar_path.metrics import path_metrics
 from lunar_path.methods.astar import astar
 from lunar_path.methods.bfs import breadth_first_search
-from lunar_path.methods.deep_rl import deep_rl_policy_path
+from lunar_path.methods.deep_rl import choose_safe_action
 from lunar_path.methods.dfs import depth_first_search
 from lunar_path.methods.greedy import greedy_best_first
-from lunar_path.methods.random_planner import random_walk
 from lunar_path.report import df_to_markdown
 from lunar_path.scenarios import default_scenarios
 from lunar_path.visualization import base_rgb, plot_path_panels
@@ -123,8 +122,6 @@ def online_plan_step(method: str, belief: LunarMap, current: Coord, rng: np.rand
         return first_step_from_plan(astar(local, risk_aware=False, battery_constrained=False), current)
     if method == "A* risk-aware-online":
         return first_step_from_plan(astar(local, risk_aware=True, battery_constrained=True), current)
-    if method == "D* Lite-style":
-        return first_step_from_plan(astar(local, risk_aware=True, battery_constrained=True), current)
     raise ValueError(method)
 
 
@@ -159,6 +156,56 @@ def run_online_method(
             break
         dy = nxt[0] - current[0]
         dx = nxt[1] - current[1]
+        move = 2 ** 0.5 if dy and dx else 1.0
+        energy_used += transition_energy(true_map, current, nxt, move)
+        current = nxt
+        path.append(current)
+        if energy_used > scenario.battery_capacity:
+            break
+
+    elapsed = time.perf_counter() - start_time
+    info = {
+        "replan_count": replan_count,
+        "collision_fail": int(collision_fail),
+        "online_runtime_sec": elapsed,
+        "known_cell_ratio": float(np.mean(known)),
+    }
+    return path, info
+
+
+def run_online_rl_method(
+    true_map: LunarMap,
+    scenario: Scenario,
+    model,
+    sensing_radius: int = 5,
+    max_steps: int = 220,
+) -> Tuple[List[Coord], Dict[str, float]]:
+    known = np.zeros((true_map.size, true_map.size), dtype=bool)
+    current = true_map.start
+    energy_used = 0.0
+    path = [current]
+    replan_count = 0
+    collision_fail = False
+    start_time = time.perf_counter()
+
+    for _ in range(max_steps):
+        if current == true_map.goal:
+            break
+        sense(true_map, known, current, sensing_radius)
+        belief = make_belief_map(true_map, known)
+        obs = observation_for_state(set_current_start(belief, current), current, energy_used)
+        proposed, _ = model.predict(obs, deterministic=True)
+        action = choose_safe_action(belief, current, obs, model, int(proposed), set(path), energy_used)
+        replan_count += 1
+        if action is None:
+            break
+        dy, dx = ACTIONS[action]
+        nxt = (current[0] + dy, current[1] + dx)
+        if not (0 <= nxt[0] < true_map.size and 0 <= nxt[1] < true_map.size):
+            break
+        if true_map.obstacle[nxt]:
+            collision_fail = True
+            break
         move = 2 ** 0.5 if dy and dx else 1.0
         energy_used += transition_energy(true_map, current, nxt, move)
         current = nxt
@@ -276,10 +323,130 @@ def plot_online_belief_sequence(
     plt.close(fig)
 
 
+def plot_online_belief_comparison(
+    true_map: LunarMap,
+    scenario: Scenario,
+    traces: List[Tuple[str, list]],
+    out_dir: Path,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cols = max(len(snapshots) for _, snapshots in traces)
+    rows = len(traces)
+    fig, axes = plt.subplots(rows, cols, figsize=(3.2 * cols, 3.4 * rows), constrained_layout=True)
+    axes_grid = np.atleast_2d(axes)
+    terrain = base_rgb(true_map)
+    colors = {
+        "A* shortest-online": "#00cfe8",
+        "A* risk-aware-online": "#76ff03",
+        "BFS-online": "#2962ff",
+        "Greedy-online": "#ffab00",
+    }
+
+    for row_idx, (method, snapshots) in enumerate(traces):
+        final_snap = snapshots[-1]
+        final_path = final_snap["path"]
+        final_pos = final_path[-1] if final_path else true_map.start
+        final_energy = final_snap["energy_used"]
+        task_pass = final_pos == true_map.goal and final_energy <= true_map.battery_capacity
+        status = "PASS" if task_pass else "FAIL"
+        line_color = colors.get(method, "#76ff03")
+        for col_idx in range(cols):
+            ax = axes_grid[row_idx, col_idx]
+            if col_idx >= len(snapshots):
+                ax.axis("off")
+                continue
+            snap = snapshots[col_idx]
+            visible = terrain.copy()
+            visible[~snap["known"]] = np.array([0.06, 0.06, 0.075])
+            ax.imshow(visible)
+            arr = np.array(snap["path"])
+            if len(arr) > 1:
+                ax.plot(arr[:, 1], arr[:, 0], color=line_color, lw=2.3)
+            ax.scatter([true_map.start[1]], [true_map.start[0]], c="#00e676", s=58, marker="o", edgecolor="black", zorder=5)
+            ax.scatter([true_map.goal[1]], [true_map.goal[0]], c="white", s=125, marker="*", edgecolor="black", linewidths=1.1, zorder=8)
+            ax.scatter([true_map.goal[1]], [true_map.goal[0]], c="#ff1744", s=82, marker="*", edgecolor="black", linewidths=0.9, zorder=9)
+            current_x = snap["pos"][1]
+            current_y = snap["pos"][0]
+            if snap["pos"] == true_map.goal:
+                current_x += 0.55
+            ax.scatter([current_x], [current_y], c="#fdd835", s=62, marker="s", edgecolor="black", zorder=10)
+            battery_used = snap["energy_used"] / true_map.battery_capacity
+            battery_label = "100%+" if battery_used > 1.0 else f"{battery_used:.0%}"
+            ax.set_title(
+                f"step {snap['step']} | known {snap['known_cell_ratio']:.0%} | battery {battery_label}",
+                fontsize=9,
+                weight="bold",
+            )
+            ax.set_xticks([])
+            ax.set_yticks([])
+            if col_idx == 0:
+                display_method = method.replace("-online", "")
+                ax.set_ylabel(f"{display_method}\n{status}", fontsize=10, weight="bold", rotation=0, labelpad=42, va="center")
+
+    fig.savefig(out_dir / f"{scenario.name}_online_local_view_success_failure.png", dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_online_belief_rows(
+    true_map: LunarMap,
+    scenario: Scenario,
+    traces: List[Tuple[str, list]],
+    out_dir: Path,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    terrain = base_rgb(true_map)
+    colors = {
+        "A* shortest-online": "#00cfe8",
+        "A* risk-aware-online": "#76ff03",
+        "BFS-online": "#2962ff",
+        "Greedy-online": "#ffab00",
+    }
+
+    for method, snapshots in traces:
+        fig, axes = plt.subplots(1, len(snapshots), figsize=(3.2 * len(snapshots), 3.1), constrained_layout=True)
+        axes_flat = list(np.atleast_1d(axes).flat)
+        line_color = colors.get(method, "#76ff03")
+        for ax, snap in zip(axes_flat, snapshots):
+            visible = terrain.copy()
+            visible[~snap["known"]] = np.array([0.06, 0.06, 0.075])
+            ax.imshow(visible)
+            arr = np.array(snap["path"])
+            if len(arr) > 1:
+                ax.plot(arr[:, 1], arr[:, 0], color=line_color, lw=2.3)
+            ax.scatter([true_map.start[1]], [true_map.start[0]], c="#00e676", s=58, marker="o", edgecolor="black", zorder=5)
+            ax.scatter([true_map.goal[1]], [true_map.goal[0]], c="white", s=125, marker="*", edgecolor="black", linewidths=1.1, zorder=8)
+            ax.scatter([true_map.goal[1]], [true_map.goal[0]], c="#ff1744", s=82, marker="*", edgecolor="black", linewidths=0.9, zorder=9)
+            current_x = snap["pos"][1]
+            current_y = snap["pos"][0]
+            if snap["pos"] == true_map.goal:
+                current_x += 0.55
+            ax.scatter([current_x], [current_y], c="#fdd835", s=62, marker="s", edgecolor="black", zorder=10)
+            battery_used = snap["energy_used"] / true_map.battery_capacity
+            battery_label = "100%+" if battery_used > 1.0 else f"{battery_used:.0%}"
+            ax.set_title(
+                f"step {snap['step']} | known {snap['known_cell_ratio']:.0%} | battery {battery_label}",
+                fontsize=9,
+                weight="bold",
+            )
+            ax.set_xticks([])
+            ax.set_yticks([])
+        file_method = method.lower().replace("a*", "astar").replace("*", "").replace(" ", "_").replace("-online", "")
+        fig.savefig(out_dir / f"{scenario.name}_{file_method}_local_view_sequence.png", dpi=180, bbox_inches="tight")
+        plt.close(fig)
+
+
 def run_online_experiment(out_dir: Path, model_dir: Path, sensing_radius: int = 5) -> pd.DataFrame:
     rows = []
     fig_dir = out_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
+    rl_models = {
+        "DQN-online": DQN.load(model_dir / "global_dqn_randomized.zip", device="cpu"),
+        "PPO-online": PPO.load(model_dir / "global_ppo_randomized.zip", device="cpu"),
+    }
     online_methods = [
         "Random-online",
         "DFS-online",
@@ -287,7 +454,6 @@ def run_online_experiment(out_dir: Path, model_dir: Path, sensing_radius: int = 
         "Greedy-online",
         "A* shortest-online",
         "A* risk-aware-online",
-        "D* Lite-style",
     ]
 
     for scenario in default_scenarios():
@@ -301,25 +467,29 @@ def run_online_experiment(out_dir: Path, model_dir: Path, sensing_radius: int = 
             row["sensing_radius"] = sensing_radius
             rows.append(row)
 
-        for method_name, model_cls in [("DQN-online", DQN), ("PPO-online", PPO)]:
-            model_name = "dqn" if method_name.startswith("DQN") else "ppo"
-            model = model_cls.load(model_dir / f"{scenario.name}_{model_name}.zip", device="cuda")
-            path = execute_path_with_battery(true_map, deep_rl_policy_path(true_map, model))
+        for method_name, model in rl_models.items():
+            path, info = run_online_rl_method(true_map, scenario, model, sensing_radius=sensing_radius)
             paths[method_name.replace("-online", "")] = path
             row = path_metrics(true_map, path, method_name, scenario)
-            row.update({"replan_count": 0, "collision_fail": 0, "online_runtime_sec": 0.0, "known_cell_ratio": np.nan, "sensing_radius": sensing_radius})
+            row.update(info)
+            row["sensing_radius"] = sensing_radius
             rows.append(row)
 
         plot_path_panels(true_map, scenario, paths, fig_dir / "online")
-        if scenario.name in {"shadow_comm", "low_battery_bad_case"}:
-            _, snapshots = run_online_method_trace(
-                true_map,
-                scenario,
-                "D* Lite-style",
-                sensing_radius=sensing_radius,
-                seed=scenario.seed + 77,
-            )
-            plot_online_belief_sequence(true_map, scenario, "D* Lite-style", snapshots, fig_dir / "online")
+        if scenario.name == "complex_moon":
+            comparison_traces = []
+            for trace_method in ["A* shortest-online", "A* risk-aware-online"]:
+                _, snapshots = run_online_method_trace(
+                    true_map,
+                    scenario,
+                    trace_method,
+                    sensing_radius=sensing_radius,
+                    seed=scenario.seed + 77,
+                    snapshot_count=4,
+                )
+                comparison_traces.append((trace_method, snapshots))
+            plot_online_belief_comparison(true_map, scenario, comparison_traces, fig_dir / "online")
+            plot_online_belief_rows(true_map, scenario, comparison_traces, fig_dir / "online")
 
     results = pd.DataFrame(rows)
     results.to_csv(out_dir / "online_metrics.csv", index=False)

@@ -6,7 +6,7 @@ This repository contains a course-project experiment for **lunar industrial rove
 
 The task is to plan a route for an autonomous rover moving between lunar industrial sites, such as a base, resource extraction area, processing facility, and communication/energy infrastructure.
 
-The experiment assumes a **fully known offline lunar terrain map**. The rover has access to the complete simulated map before planning starts. This is not a SLAM or online exploration project.
+The main setting assumes a **fully known offline lunar terrain map**. The repository also includes an online local-view setting where the rover reveals a circular sensing window while moving. This is incremental map revelation, not full SLAM: localization uncertainty, sensor noise, loop closure, and map optimization are not modeled.
 
 Each map contains terrain layers inspired by lunar surface conditions:
 
@@ -76,9 +76,9 @@ Current task success summary:
 | DFS | 1/6 |
 | Random | 0/6 |
 
-An additional generalization experiment evaluates saved DQN/PPO models on unseen maps generated from the same scenario settings but different random seeds.
+The DQN and PPO baselines use saved generalized models trained on randomized maps sampled from all six scenario families.
 
-The repository also includes an **online local-view replanning** experiment. In this setting, the rover does not start with the full map. It updates a circular local sensing window while moving and replans with the currently known map. This experiment includes a `D* Lite-style` replanning baseline.
+The repository also includes an **online local-view replanning** experiment. In this setting, the rover does not start with the full map. It updates a circular local sensing window while moving and replans with the currently known map using the online variants of the compared planners.
 
 A scale-up experiment is also provided. It generates multiple random maps per scenario family and reports pass rates over a larger sample rather than only a few case-level examples.
 
@@ -88,7 +88,6 @@ A scale-up experiment is also provided. It generates multiple random maps per sc
 .
 ├── lunar_path/
 │   ├── environment.py          # Lunar map generator, Gym environment, energy model
-│   ├── generalization.py       # Extra unseen-map RL generalization test
 │   ├── metrics.py              # Path and battery metrics
 │   ├── online.py               # Local-view online replanning experiment
 │   ├── report.py               # Markdown report generator
@@ -103,13 +102,16 @@ A scale-up experiment is also provided. It generates multiple random maps per sc
 │       ├── greedy.py
 │       └── random_planner.py
 ├── scripts/
-│   └── run_lunar_path_experiments.py
+│   ├── run_lunar_path_experiments.py
+│   ├── run_scale_up_experiment.py
+│   └── train_general_rl_model.py
 ├── experiments/
 │   ├── report.md
 │   └── results/
 │       ├── metrics.csv
-│       ├── generalization_metrics.csv
-│       ├── rl_training_logs.csv
+│       ├── online_metrics.csv
+│       ├── scale_up_metrics.csv
+│       ├── scale_up_summary.csv
 │       ├── figures/
 │       └── models/
 ├── proposal.md
@@ -129,24 +131,14 @@ The script will:
 
 1. generate lunar terrain scenarios;
 2. run Random, DFS, BFS, Greedy, A* shortest, and A* risk-aware;
-3. train DQN and PPO;
-4. save RL model weights;
-5. generate metrics, figures, and the Markdown report.
+3. load the saved generalized DQN/PPO weights;
+4. generate metrics, figures, and the Markdown report.
 
-If CUDA is available, DQN/PPO training uses GPU automatically.
-
-To run only the RL generalization test using saved model weights:
+To train generalized DQN/PPO models across all scenario families:
 
 ```bash
-.venv/bin/python - <<'PY'
-from pathlib import Path
-from lunar_path.generalization import run_generalization_test
-
-run_generalization_test(
-    Path("experiments/results/models"),
-    Path("experiments/results/generalization_metrics.csv"),
-)
-PY
+.venv/bin/python scripts/train_general_rl_model.py --algorithm DQN --timesteps 500000 --device cuda:0
+.venv/bin/python scripts/train_general_rl_model.py --algorithm PPO --timesteps 500000 --device cuda:1
 ```
 
 To run only the online local-view replanning experiment:
@@ -167,17 +159,7 @@ PY
 To run the scale-up robustness experiment:
 
 ```bash
-.venv/bin/python - <<'PY'
-from pathlib import Path
-from lunar_path.scale_up import run_scale_up_experiment
-
-run_scale_up_experiment(
-    Path("experiments/results"),
-    Path("experiments/results/models"),
-    seeds_per_scenario=8,
-    sensing_radius=5,
-)
-PY
+.venv/bin/python scripts/run_scale_up_experiment.py
 ```
 
 ## Outputs
@@ -186,21 +168,18 @@ Important generated files:
 
 - `experiments/report.md`: full English experiment report
 - `experiments/results/metrics.csv`: main metrics
-- `experiments/results/generalization_metrics.csv`: unseen-map RL generalization metrics
 - `experiments/results/online_metrics.csv`: online local-view replanning metrics
 - `experiments/results/scale_up_metrics.csv`: per-map scale-up experiment metrics
 - `experiments/results/scale_up_summary.csv`: aggregated scale-up pass rates
-- `experiments/results/figures/task_outcome_matrix.png`: pass/fail outcome matrix
-- `experiments/results/figures/online_task_outcome_matrix.png`: online pass/fail outcome matrix
-- `experiments/results/figures/scale_up_overall_pass_rate.png`: scale-up pass-rate comparison
+- `experiments/results/figures/offline_online_outcome_matrix.png`: offline/online pass-fail matrix
 - `experiments/results/figures/metrics_comparison.png`: metric comparison chart
 - `experiments/results/figures/*_paths.png`: combined path visualizations
 - `experiments/results/figures/*_path_panels.png`: per-method path visualizations
-- `experiments/results/models/*.zip`: saved DQN/PPO weights
+- `experiments/results/models/global_dqn_randomized.zip`: saved generalized DQN weights
+- `experiments/results/models/global_ppo_randomized.zip`: saved generalized PPO weights
 
 ## Notes and Limitations
 
-- The map is fully known before planning; online SLAM and localization uncertainty are not modeled.
-- DQN/PPO are trained and tested on the same scenario maps in the main experiment.
-- The extra generalization experiment tests saved RL policies on unseen maps, but no domain randomization training is performed.
+- The offline map is fully known before planning; the online setting is local map revelation, not SLAM.
+- DQN/PPO use compact local observations rather than image-like terrain maps.
 - The lunar environment is a simplified simulation, not a high-fidelity physics or rover dynamics simulator.
